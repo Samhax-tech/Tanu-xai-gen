@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 const config = require('../config/env');
 const logger = require('../utils/logger');
 
@@ -15,6 +16,15 @@ class SupabaseService {
             auth: {
                 autoRefreshToken: false,
                 persistSession: false
+            },
+            global: {
+                fetch: (...args) => {
+                    const headers = args[1]?.headers || {};
+                    return fetch(...args);
+                }
+            },
+            realtime: {
+                transport: ws
             }
         });
 

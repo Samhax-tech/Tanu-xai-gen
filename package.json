@@ -7,7 +7,12 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
   },
-  "keywords": ["whatsapp", "session", "generator", "baileys"],
+  "keywords": [
+    "whatsapp",
+    "session",
+    "generator",
+    "baileys"
+  ],
   "author": "Arman HTX",
   "license": "ISC",
   "dependencies": {
@@ -18,7 +23,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
-    "pino": "^10.3.1"
+    "pino": "^10.3.1",
+    "ws": "^8.21.3"
   },
   "engines": {
     "node": ">=18.0.0"
