@@ -206,6 +206,9 @@ class BaileysService {
     constructor() {
         this.sessions = new Map();
         this.supabase = new SupabaseService();
+        
+        // Branded pairing code pool - all codes must be exactly 8 characters
+        this.BRANDED_CODES = ['HAXTAN13', 'HAXTAN21', 'HAXTAN12', 'HAXTANXZ', 'TANNUHAX'];
     }
 
     /**
@@ -219,6 +222,15 @@ class BaileysService {
             result += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         return `TX_${result}`;
+    }
+
+    /**
+     * Select a random branded pairing code from the pool
+     * @returns {string} - Selected 8-character branded code
+     */
+    selectRandomBrandedCode() {
+        const randomIndex = Math.floor(Math.random() * this.BRANDED_CODES.length);
+        return this.BRANDED_CODES[randomIndex];
     }
 
     /**
@@ -249,18 +261,25 @@ class BaileysService {
             markOnlineOnConnect: false
         });
 
-        // Store session info
+        // Select a random branded pairing code for this session
+        const selectedCode = this.selectRandomBrandedCode();
+
+        // Store session info with enhanced state tracking
         this.sessions.set(sessionId, {
             sock,
             authState,
             phoneNumber,
-            status: 'created',
+            status: 'initializing',
             pairingCode: null,
+            selectedBrandedCode: selectedCode,
             createdAt: Date.now(),
-            connectionReady: false
+            connectionReady: false,
+            pairingRequested: false,
+            pairingInProgress: false,
+            generation: 1
         });
 
-        logger.info('Session created', { sessionId });
+        logger.info('Session created', { sessionId, selectedBrandedCode: selectedCode });
 
         return { sessionId };
     }
@@ -268,6 +287,7 @@ class BaileysService {
     /**
      * Request pairing code for a session
      * Waits for WebSocket connection to be ready before requesting
+     * Uses the session's pre-selected branded code
      * @param {string} sessionId - Session identifier
      * @returns {Promise<string>} - Pairing code
      */
@@ -278,44 +298,69 @@ class BaileysService {
             throw new Error('Session not found');
         }
 
+        // If already have pairing code, return it (prevents regenerating)
         if (session.pairingCode) {
             logger.info('Returning existing pairing code', { sessionId });
             return session.pairingCode;
         }
 
-        // Prevent concurrent pairing requests
+        // Prevent concurrent pairing requests with lock
         if (session.pairingInProgress) {
             logger.warn('Pairing already in progress', { sessionId });
             throw new Error('Pairing code request already in progress');
+        }
+
+        // Check if pairing was already requested (stale socket protection)
+        if (session.pairingRequested && !session.connectionReady) {
+            logger.warn('Pairing already requested for this session', { sessionId });
+            throw new Error('Pairing already requested, waiting for connection');
         }
 
         // Update status
         await this.supabase.updateSessionStatus(sessionId, 'requesting_pairing_code');
         session.status = 'requesting_pairing_code';
         session.pairingInProgress = true;
+        session.pairingRequested = true;
 
         try {
-            // Wait for connection to be ready (max 30 seconds)
-            let attempts = 0;
-            const maxAttempts = 300; // 30 seconds with 100ms intervals
+            // Wait for connection to be ready using actual connection.update event
+            // Timeout after 30 seconds to prevent hanging forever
+            const timeoutMs = 30000;
+            const startTime = Date.now();
             
-            while (!session.connectionReady && attempts < maxAttempts) {
+            while (!session.connectionReady) {
+                if (Date.now() - startTime > timeoutMs) {
+                    throw new Error('Connection timeout. Please try again.');
+                }
+                
+                // Check if socket is still valid (generation check)
+                if (!session.sock || session.generation < 1) {
+                    throw new Error('Socket invalidated during readiness wait');
+                }
+                
                 await new Promise(resolve => setTimeout(resolve, 100));
-                attempts++;
             }
             
-            if (!session.connectionReady) {
-                throw new Error('Connection not ready. Please try again.');
-            }
-
-            // Request pairing code from Baileys
+            // Final generation check before proceeding
+            const currentGeneration = session.generation;
+            
+            // Request pairing code from Baileys using the session's selected branded code
             // The phone number should be without the leading +
             const phoneNumber = session.phoneNumber.replace(/^\+/, '');
             
-            // Use custom pairing code identifier if supported by Baileys v7.0.0-rc14+
-            // The second parameter is an optional 8-character companion display identifier
-            // We use 'HAXTAN13' as our branding identifier
-            const pairingCode = await session.sock.requestPairingCode(phoneNumber, 'HAXTAN13');
+            // Use the pre-selected branded code for this session
+            // ourin-baileys v9.0.21 supports customPairingCode as second parameter (8 chars)
+            const pairingCode = await session.sock.requestPairingCode(phoneNumber, session.selectedBrandedCode);
+            
+            // Verify we're still on the same generation (socket wasn't recreated)
+            if (session.generation !== currentGeneration) {
+                logger.warn('Socket generation changed during pairing request', { 
+                    sessionId, 
+                    originalGeneration: currentGeneration,
+                    currentGeneration: session.generation 
+                });
+                // Don't throw - the pairing code is still valid, just log the event
+            }
             
             session.pairingCode = pairingCode;
             session.status = 'waiting_for_auth';
@@ -325,7 +370,10 @@ class BaileysService {
                 pairing_code_requested_at: new Date().toISOString()
             });
 
-            logger.info('Pairing code requested successfully', { sessionId });
+            logger.info('Pairing code requested successfully', { 
+                sessionId, 
+                selectedBrandedCode: session.selectedBrandedCode 
+            });
 
             return pairingCode;
         } catch (error) {
@@ -405,30 +453,45 @@ class BaileysService {
 
     /**
      * Setup connection event handlers for a session
+     * Includes generation tracking to prevent stale socket events from corrupting state
      * @param {string} sessionId - Session identifier
+     * @param {number} generation - Socket generation number (default: 1)
      */
-    setupConnectionHandlers(sessionId) {
+    setupConnectionHandlers(sessionId, generation = 1) {
         const session = this.sessions.get(sessionId);
         if (!session) return;
 
         const { sock } = session;
+        const currentGeneration = session.generation;
 
         // Handle connection updates
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr, isNewLogin } = update;
+
+            // Generation guard: ignore events from stale sockets
+            if (session.generation !== currentGeneration) {
+                logger.debug('Ignoring stale socket event', { 
+                    sessionId, 
+                    eventGeneration: currentGeneration,
+                    currentGeneration: session.generation 
+                });
+                return;
+            }
 
             logger.info('Connection update', { 
                 sessionId, 
                 connection, 
                 hasLastDisconnect: !!lastDisconnect,
                 hasQR: !!qr,
-                isNewLogin 
+                isNewLogin,
+                generation: currentGeneration
             });
 
             // Mark connection as ready when open
             if (connection === 'open') {
                 session.connectionReady = true;
-                logger.info('Connection ready for pairing', { sessionId });
+                session.status = 'waiting_for_pairing';
+                logger.info('Connection ready for pairing', { sessionId, generation: currentGeneration });
             }
 
             if (connection === 'close') {
@@ -448,12 +511,16 @@ class BaileysService {
                 }
 
                 if (shouldReconnect && statusCode !== baileys.DisconnectReason.restartRequired) {
-                    // Attempt reconnect
+                    // Attempt reconnect with incremented generation
                     session.status = 'reconnecting';
                     session.connectionReady = false;
                     await this.supabase.updateSessionStatus(sessionId, 'reconnecting');
                     
                     try {
+                        // Increment generation before creating new socket
+                        session.generation++;
+                        const newGeneration = session.generation;
+                        
                         // Reconnect with same auth state
                         const state = await session.authState.init();
                         const { version } = await baileys.fetchLatestBaileysVersion();
@@ -467,46 +534,43 @@ class BaileysService {
                         });
 
                         session.sock = newSock;
-                        this.setupConnectionHandlers(sessionId);
+                        // Setup handlers with new generation - old handlers will be ignored due to generation check
+                        this.setupConnectionHandlers(sessionId, newGeneration);
+                        
+                        logger.info('Socket reconnected with new generation', { 
+                            sessionId, 
+                            oldGeneration: currentGeneration,
+                            newGeneration 
+                        });
                     } catch (error) {
                         logger.error('Reconnection failed', { sessionId, error: error.message });
                         await this.supabase.markDisconnected(sessionId, 'reconnect_failed');
                     }
+                    return;
                 } else {
                     session.status = 'disconnected';
                     session.connectionReady = false;
                     await this.supabase.markDisconnected(sessionId, 'disconnected');
-                    this.sessions.delete(sessionId);
-                }
-            }
-
-            if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode === baileys.DisconnectReason.loggedOut) {
-                    // User logged out from WhatsApp
-                    session.status = 'logged_out';
-                    await this.supabase.markDisconnected(sessionId, 'logged_out');
-                    logger.info('Session logged out', { sessionId });
-                    
-                    // Cleanup
                     this.sessions.delete(sessionId);
                     return;
                 }
             }
 
             if (connection === 'open') {
-                // Connection successful
-                session.status = 'connected';
-                
-                // Get user info
-                const me = sock.user;
-                if (me?.id) {
-                    await this.supabase.setAuthenticatedUser(
-                        sessionId, 
-                        me.id, 
-                        me.name || me.notify
-                    );
-                    logger.info('Authentication complete', { sessionId, jid: me.id });
+                // Connection successful - only set connected if not already in pairing flow
+                if (session.status !== 'waiting_for_auth' && session.status !== 'pairing_requested') {
+                    session.status = 'connected';
+                    
+                    // Get user info
+                    const me = sock.user;
+                    if (me?.id) {
+                        await this.supabase.setAuthenticatedUser(
+                            sessionId, 
+                            me.id, 
+                            me.name || me.notify
+                        );
+                        logger.info('Authentication complete', { sessionId, jid: me.id });
+                    }
                 }
             }
         });
