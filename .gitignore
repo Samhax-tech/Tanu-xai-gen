@@ -16,33 +16,30 @@ node_modules/
 *.tmp
 *.swp
 
-# Build artifacts
-dist/
-build/
-target/
-
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-selfcheck.json
-*.so
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git*
-!gitignore
-*.sublime-workspace
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# OS generated files
 .DS_Store
 Thumbs.db
+
+# Runtime data
+.DS_Store
+.nyc_output
+coverage/
+*.lcov
+
+# NVM
+.nvmrc
+
+# Railway
+.railway/
 ```
