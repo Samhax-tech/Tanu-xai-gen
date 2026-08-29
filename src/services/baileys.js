@@ -1,11 +1,15 @@
-const {
-    makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion,
-    initAuthCreds
-} = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+// ourin-baileys is an ESM module, so we need to handle it carefully
+// We'll use a lazy loading pattern with async initialization
+
+let baileysModule = null;
+
+async function getBaileys() {
+    if (!baileysModule) {
+        baileysModule = await import('ourin-baileys');
+    }
+    return baileysModule;
+}
+
 const logger = require('../utils/logger');
 const SupabaseService = require('./supabase');
 
@@ -223,6 +227,7 @@ class BaileysService {
      * @returns {Promise<{sessionId: string, pairingCode?: string}>}
      */
     async createSession(phoneNumber) {
+        const baileys = await getBaileys();
         const sessionId = this.generateSessionId();
         
         // Create session record in Supabase
@@ -233,10 +238,10 @@ class BaileysService {
         const state = await authState.init();
 
         // Get latest Baileys version
-        const { version } = await fetchLatestBaileysVersion();
+        const { version } = await baileys.fetchLatestBaileysVersion();
 
         // Create Baileys socket
-        const sock = makeWASocket({
+        const sock = baileys.makeWASocket({
             version,
             auth: state,
             printQRInTerminal: false,
@@ -427,10 +432,11 @@ class BaileysService {
             }
 
             if (connection === 'close') {
+                const baileys = await getBaileys();
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                const shouldReconnect = statusCode !== baileys.DisconnectReason.loggedOut;
 
-                if (statusCode === DisconnectReason.loggedOut) {
+                if (statusCode === baileys.DisconnectReason.loggedOut) {
                     // User logged out from WhatsApp
                     session.status = 'logged_out';
                     await this.supabase.markDisconnected(sessionId, 'logged_out');
@@ -441,7 +447,7 @@ class BaileysService {
                     return;
                 }
 
-                if (shouldReconnect && statusCode !== DisconnectReason.restartRequired) {
+                if (shouldReconnect && statusCode !== baileys.DisconnectReason.restartRequired) {
                     // Attempt reconnect
                     session.status = 'reconnecting';
                     session.connectionReady = false;
@@ -450,9 +456,9 @@ class BaileysService {
                     try {
                         // Reconnect with same auth state
                         const state = await session.authState.init();
-                        const { version } = await fetchLatestBaileysVersion();
+                        const { version } = await baileys.fetchLatestBaileysVersion();
                         
-                        const newSock = makeWASocket({
+                        const newSock = baileys.makeWASocket({
                             version,
                             auth: state,
                             printQRInTerminal: false,
@@ -471,6 +477,20 @@ class BaileysService {
                     session.connectionReady = false;
                     await this.supabase.markDisconnected(sessionId, 'disconnected');
                     this.sessions.delete(sessionId);
+                }
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                if (statusCode === baileys.DisconnectReason.loggedOut) {
+                    // User logged out from WhatsApp
+                    session.status = 'logged_out';
+                    await this.supabase.markDisconnected(sessionId, 'logged_out');
+                    logger.info('Session logged out', { sessionId });
+                    
+                    // Cleanup
+                    this.sessions.delete(sessionId);
+                    return;
                 }
             }
 
