@@ -348,9 +348,24 @@ class BaileysService {
             // The phone number should be without the leading +
             const phoneNumber = session.phoneNumber.replace(/^\+/, '');
             
+            // Validate the selected branded code before use
+            const selectedCode = session.selectedBrandedCode;
+            if (!selectedCode || typeof selectedCode !== 'string') {
+                throw new Error('Invalid pairing code configuration');
+            }
+            if (selectedCode.length !== 8) {
+                throw new Error('Pairing code must be exactly 8 characters');
+            }
+            if (!this.BRANDED_CODES.includes(selectedCode)) {
+                throw new Error('Pairing code is not from the valid branded pool');
+            }
+            if (!/^[A-Z0-9]{8}$/.test(selectedCode)) {
+                throw new Error('Pairing code must contain only uppercase letters and digits');
+            }
+            
             // Use the pre-selected branded code for this session
             // ourin-baileys v9.0.21 supports customPairingCode as second parameter (8 chars)
-            const pairingCode = await session.sock.requestPairingCode(phoneNumber, session.selectedBrandedCode);
+            const pairingCode = await session.sock.requestPairingCode(phoneNumber, selectedCode);
             
             // Verify we're still on the same generation (socket wasn't recreated)
             if (session.generation !== currentGeneration) {
