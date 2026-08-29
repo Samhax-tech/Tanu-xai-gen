@@ -29,28 +29,57 @@ zig*/
 
 # Editors
 .vscode/
-.idea/
+
+# Logs and temp files
+*.log
+*.tmp
 *.swp
 *.swo
 
-# OS specific
-.DS_Store
-Thumbs.db
+# Build artifacts
+dist/
+build/
+target/
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Python specific
-*.pyc
+# Python
 __pycache__/
+*.pyc
 *.pyo
 *.pyd
-.Python
-*.so
 
-# Compressed files
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+target/
+
+# C/C++
+*.o
+*.obj
+*.so
+*.a
+*.dll
+*.dylib
+*.exe
+
+# Go
+*.exe
+*.test
+*.prof
+
+# Ruby
+*.gem
+*.rbc
+.bundle/
+
+# Node.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Compression
 *.zip
 *.gz
 *.tar
@@ -73,4 +102,25 @@ __pycache__/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+
+# System
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+htmlcov/
+.coverage
+*.cover
+*.log
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+.gradle/
 ```

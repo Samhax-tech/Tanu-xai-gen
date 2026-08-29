@@ -262,6 +262,7 @@ class BaileysService {
 
     /**
      * Request pairing code for a session
+     * Waits for WebSocket connection to be ready before requesting
      * @param {string} sessionId - Session identifier
      * @returns {Promise<string>} - Pairing code
      */
@@ -277,15 +278,37 @@ class BaileysService {
             return session.pairingCode;
         }
 
+        // Prevent concurrent pairing requests
+        if (session.pairingInProgress) {
+            logger.warn('Pairing already in progress', { sessionId });
+            throw new Error('Pairing code request already in progress');
+        }
+
         // Update status
         await this.supabase.updateSessionStatus(sessionId, 'requesting_pairing_code');
         session.status = 'requesting_pairing_code';
+        session.pairingInProgress = true;
 
-        // Request pairing code from Baileys
-        // The phone number should be without the leading +
-        const phoneNumber = session.phoneNumber.replace(/^\+/, '');
-        
         try {
+            // Wait for connection to be ready (max 30 seconds)
+            let attempts = 0;
+            const maxAttempts = 300; // 30 seconds with 100ms intervals
+            
+            while (!session.connectionReady && attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                attempts++;
+            }
+            
+            if (!session.connectionReady) {
+                throw new Error('Connection not ready. Please try again.');
+            }
+
+            // Request pairing code from Baileys
+            // The phone number should be without the leading +
+            const phoneNumber = session.phoneNumber.replace(/^\+/, '');
+            
+            // Use custom pairing code identifier if supported by Baileys
+            // Note: This is a companion display identifier, not the actual 8-char code
             const pairingCode = await session.sock.requestPairingCode(phoneNumber);
             
             session.pairingCode = pairingCode;
@@ -296,7 +319,7 @@ class BaileysService {
                 pairing_code_requested_at: new Date().toISOString()
             });
 
-            logger.info('Pairing code requested', { sessionId });
+            logger.info('Pairing code requested successfully', { sessionId });
 
             return pairingCode;
         } catch (error) {
@@ -305,6 +328,8 @@ class BaileysService {
                 error_message: error.message
             });
             throw error;
+        } finally {
+            session.pairingInProgress = false;
         }
     }
 
@@ -394,6 +419,12 @@ class BaileysService {
                 isNewLogin 
             });
 
+            // Mark connection as ready when open
+            if (connection === 'open') {
+                session.connectionReady = true;
+                logger.info('Connection ready for pairing', { sessionId });
+            }
+
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -412,6 +443,7 @@ class BaileysService {
                 if (shouldReconnect && statusCode !== DisconnectReason.restartRequired) {
                     // Attempt reconnect
                     session.status = 'reconnecting';
+                    session.connectionReady = false;
                     await this.supabase.updateSessionStatus(sessionId, 'reconnecting');
                     
                     try {
@@ -435,6 +467,7 @@ class BaileysService {
                     }
                 } else {
                     session.status = 'disconnected';
+                    session.connectionReady = false;
                     await this.supabase.markDisconnected(sessionId, 'disconnected');
                     this.sessions.delete(sessionId);
                 }
