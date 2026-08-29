@@ -251,7 +251,8 @@ class BaileysService {
             phoneNumber,
             status: 'created',
             pairingCode: null,
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            connectionReady: false
         });
 
         logger.info('Session created', { sessionId });
