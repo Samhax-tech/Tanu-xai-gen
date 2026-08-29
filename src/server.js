@@ -193,3 +193,7 @@ class Server {
 }
 
 module.exports = Server;
+
+// Start the server when run directly
+const server = new Server();
+server.start();
