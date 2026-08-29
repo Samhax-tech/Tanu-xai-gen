@@ -1,6 +1,26 @@
 ```
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+dist/
+build/
+target/
+
 # Dependencies
+.venv/
+venv/
 node_modules/
+.julia/
+zig*/
+.deps/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
 
 # Environment
 .env
@@ -10,36 +30,47 @@ node_modules/
 # Editors
 .vscode/
 .idea/
-
-# Logs and temp files
-*.log
-*.tmp
 *.swp
+*.swo
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Build outputs
-dist/
-build/
-*.egg-info/
-
-# OS generated files
+# OS specific
 .DS_Store
 Thumbs.db
 
-# Runtime data
-.DS_Store
-.nyc_output
+# Coverage
 coverage/
-*.lcov
+htmlcov/
+.coverage
 
-# NVM
-.nvmrc
+# Python specific
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
 
-# Railway
-.railway/
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
