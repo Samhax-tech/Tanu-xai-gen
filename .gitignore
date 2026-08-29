@@ -1,6 +1,26 @@
 ```
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+dist/
+build/
+target/
+
 # Dependencies
+.venv/
+venv/
 node_modules/
+.julia/
+zig*/
+.deps/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
 
 # Environment
 .env
@@ -14,6 +34,7 @@ node_modules/
 *.log
 *.tmp
 *.swp
+*.swo
 
 # Build artifacts
 dist/
