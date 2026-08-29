@@ -30,6 +30,9 @@ class Server {
      * Setup Express middleware
      */
     setupMiddleware() {
+        // Trust Railway's reverse proxy for correct client IP detection
+        this.app.set('trust proxy', true);
+
         // Security headers
         this.app.use(helmet({
             contentSecurityPolicy: false, // Allow inline styles/scripts for simple frontend
@@ -44,7 +47,7 @@ class Server {
             credentials: false
         }));
 
-        // Rate limiting
+        // Rate limiting - configured AFTER trust proxy
         const limiter = rateLimit({
             windowMs: 15 * 60 * 1000, // 15 minutes
             max: 100, // Limit each IP to 100 requests per windowMs

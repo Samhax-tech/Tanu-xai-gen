@@ -5,6 +5,7 @@
 
 let currentSessionId = null;
 let statusCheckInterval = null;
+let currentPairingCode = null;
 
 // DOM Elements
 const phoneForm = document.getElementById('phone-form');
@@ -22,6 +23,7 @@ const statusText = document.getElementById('status-text');
 const authSpinner = document.getElementById('auth-spinner');
 const connectedInfo = document.getElementById('connected-info');
 const errorMessage = document.getElementById('error-message');
+const copyBtn = document.getElementById('copy-btn');
 
 /**
  * Show a specific step
@@ -41,6 +43,28 @@ function formatPairingCode(code) {
         return code;
     }
     return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+/**
+ * Copy pairing code to clipboard
+ */
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        if (copyBtn) {
+            const originalText = copyBtn.textContent;
+            copyBtn.textContent = '✓ Copied!';
+            copyBtn.disabled = true;
+            setTimeout(() => {
+                copyBtn.textContent = originalText;
+                copyBtn.disabled = false;
+            }, 2000);
+        }
+        return true;
+    } catch (err) {
+        console.error('Failed to copy:', err);
+        return false;
+    }
 }
 
 /**
@@ -84,6 +108,8 @@ async function startSession(phoneNumber) {
  */
 async function requestPairingCode() {
     try {
+        generateBtn.textContent = 'Generating code...';
+        
         const response = await fetch(`/api/session/${currentSessionId}/pairing-code`, {
             method: 'POST'
         });
@@ -91,11 +117,19 @@ async function requestPairingCode() {
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.error || 'Failed to get pairing code');
+            throw new Error(data.error || data.message || 'Failed to get pairing code');
         }
 
-        // Display formatted pairing code
+        // Store and display formatted pairing code
+        currentPairingCode = data.pairingCode;
         pairingCodeEl.textContent = formatPairingCode(data.pairingCode);
+
+        // Setup copy button
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => {
+                copyToClipboard(currentPairingCode);
+            });
+        }
 
         // Move to code step
         showStep(stepCode);
@@ -106,6 +140,9 @@ async function requestPairingCode() {
     } catch (error) {
         console.error('Request pairing code error:', error);
         showError(error.message);
+    } finally {
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Pairing Code';
     }
 }
 
@@ -132,7 +169,7 @@ async function checkStatus() {
             showConnected(status);
         } else if (status.status === 'failed' || status.status === 'logged_out') {
             stopStatusPolling();
-            showError('Authentication failed or logged out');
+            showError('Authentication failed or logged out. Please try again.');
         }
 
     } catch (error) {
@@ -148,6 +185,8 @@ async function checkStatus() {
 function updateStatusUI(status) {
     const statusMessages = {
         'created': 'Initializing session...',
+        'initializing': 'Initializing session...',
+        'connecting': 'Connecting to WhatsApp...',
         'requesting_pairing_code': 'Requesting pairing code...',
         'waiting_for_auth': 'Waiting for authentication...',
         'authenticating': 'Authenticating...',
@@ -248,9 +287,9 @@ phoneInput.addEventListener('input', (e) => {
     
     // Allow only digits and one leading +
     if (value.startsWith('+')) {
-        value = '+' + value.slice(1).replace(/[^\d]/g, '');
+        value = '+' + value.slice(1).replace(/[^\\d]/g, '');
     } else {
-        value = value.replace(/[^\d+]/g, '');
+        value = value.replace(/[^\\d+]/g, '');
     }
     
     e.target.value = value;

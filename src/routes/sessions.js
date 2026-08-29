@@ -38,7 +38,7 @@ class SessionRoutes {
                 // Create session
                 const result = await this.baileysService.createSession(validation.normalized);
                 
-                // Setup connection handlers
+                // Setup connection handlers immediately after session creation
                 this.baileysService.setupConnectionHandlers(result.sessionId);
 
                 logger.info('Session start requested', { sessionId: result.sessionId });
@@ -59,11 +59,30 @@ class SessionRoutes {
         /**
          * POST /api/session/:sessionId/pairing-code
          * Request pairing code for an existing session
+         * Automatically triggers pairing code request when socket is ready
          */
         this.router.post('/:sessionId/pairing-code', async (req, res) => {
             try {
                 const { sessionId } = req.params;
 
+                // Check if session exists in memory
+                const session = this.baileysService.sessions.get(sessionId);
+                if (!session) {
+                    return res.status(404).json({
+                        error: 'Session not found or expired'
+                    });
+                }
+
+                // If already have pairing code, return it
+                if (session.pairingCode) {
+                    logger.info('Returning existing pairing code', { sessionId });
+                    return res.json({
+                        success: true,
+                        pairingCode: session.pairingCode
+                    });
+                }
+
+                // Request pairing code (waits for socket readiness internally)
                 const pairingCode = await this.baileysService.requestPairingCode(sessionId);
 
                 logger.info('Pairing code requested', { sessionId });
