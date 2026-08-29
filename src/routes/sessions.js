@@ -73,12 +73,30 @@ class SessionRoutes {
                     });
                 }
 
+                // If already connected, don't generate another code
+                if (session.status === 'connected') {
+                    logger.info('Session already connected', { sessionId });
+                    return res.status(400).json({
+                        error: 'SESSION_ALREADY_CONNECTED',
+                        message: 'This session is already connected. No new pairing code needed.'
+                    });
+                }
+
                 // If already have pairing code, return it
                 if (session.pairingCode) {
                     logger.info('Returning existing pairing code', { sessionId });
                     return res.json({
                         success: true,
                         pairingCode: session.pairingCode
+                    });
+                }
+
+                // Check if pairing is currently being generated
+                if (session.pairingInProgress) {
+                    logger.info('Pairing already in progress', { sessionId });
+                    return res.status(409).json({
+                        error: 'PAIRING_IN_PROGRESS',
+                        message: 'Pairing code generation is already in progress. Please wait.'
                     });
                 }
 
@@ -96,8 +114,27 @@ class SessionRoutes {
                     sessionId: req.params.sessionId, 
                     error: error.message 
                 });
-                res.status(500).json({
-                    error: 'Failed to request pairing code',
+                
+                // Handle specific error types with appropriate status codes
+                let statusCode = 500;
+                let errorCode = 'PAIRING_REQUEST_FAILED';
+                
+                if (error.message.includes('timeout')) {
+                    statusCode = 408;
+                    errorCode = 'PAIRING_TIMEOUT';
+                } else if (error.message.includes('not found')) {
+                    statusCode = 404;
+                    errorCode = 'SESSION_NOT_FOUND';
+                } else if (error.message.includes('Socket invalidated')) {
+                    statusCode = 409;
+                    errorCode = 'STALE_SOCKET';
+                } else if (error.message.includes('already requested')) {
+                    statusCode = 409;
+                    errorCode = 'PAIRING_ALREADY_REQUESTED';
+                }
+                
+                res.status(statusCode).json({
+                    error: errorCode,
                     message: error.message
                 });
             }
