@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tanu Xai - WhatsApp Session Generator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Tanu Xai</h1>
+            <p class="subtitle">WhatsApp Session Generator</p>
+        </header>
+
+        <main>
+            <!-- Step 1: Enter Phone Number -->
+            <section id="step-phone" class="step active">
+                <h2>Enter WhatsApp Number</h2>
+                <form id="phone-form">
+                    <div class="input-group">
+                        <input 
+                            type="tel" 
+                            id="phone-input" 
+                            placeholder="+92XXXXXXXXXX" 
+                            autocomplete="tel"
+                            required
+                        >
+                    </div>
+                    <button type="submit" id="generate-btn">
+                        Generate Pairing Code
+                    </button>
+                </form>
+                <div id="phone-error" class="error-message"></div>
+            </section>
+
+            <!-- Step 2: Show Pairing Code -->
+            <section id="step-code" class="step">
+                <h2>Your Pairing Code</h2>
+                <div class="pairing-code-display">
+                    <code id="pairing-code">---- ----</code>
+                </div>
+                
+                <div class="instructions">
+                    <h3>How to link your device:</h3>
+                    <ol>
+                        <li>Open WhatsApp on your phone</li>
+                        <li>Go to <strong>Settings</strong> → <strong>Linked Devices</strong></li>
+                        <li>Tap <strong>Link a Device</strong></li>
+                        <li>Select <strong>Link with phone number</strong></li>
+                        <li>Enter this code</li>
+                    </ol>
+                </div>
+
+                <div class="status-container">
+                    <p id="status-text">Waiting for authentication...</p>
+                    <div class="spinner" id="auth-spinner"></div>
+                </div>
+            </section>
+
+            <!-- Step 3: Connected -->
+            <section id="step-connected" class="step">
+                <div class="success-icon">✓</div>
+                <h2>Connected!</h2>
+                <p id="connected-info"></p>
+                <p class="safe-note">
+                    Your session has been securely stored and is ready for use with the Tanu Xai bot.
+                </p>
+            </section>
+
+            <!-- Error State -->
+            <section id="step-error" class="step">
+                <div class="error-icon">✕</div>
+                <h2>Connection Failed</h2>
+                <p id="error-message"></p>
+                <button onclick="location.reload()" class="retry-btn">Try Again</button>
+            </section>
+        </main>
+
+        <footer>
+            <p>Owner: Arman HTX | Owner's Owner: Tanu Darling</p>
+            <p class="disclaimer">
+                This session generator is for authentication only. 
+                Your credentials are never exposed to the browser.
+            </p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
