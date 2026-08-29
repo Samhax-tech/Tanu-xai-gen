@@ -307,9 +307,10 @@ class BaileysService {
             // The phone number should be without the leading +
             const phoneNumber = session.phoneNumber.replace(/^\+/, '');
             
-            // Use custom pairing code identifier if supported by Baileys
-            // Note: This is a companion display identifier, not the actual 8-char code
-            const pairingCode = await session.sock.requestPairingCode(phoneNumber);
+            // Use custom pairing code identifier if supported by Baileys v7.0.0-rc14+
+            // The second parameter is an optional 8-character companion display identifier
+            // We use 'HAXTAN13' as our branding identifier
+            const pairingCode = await session.sock.requestPairingCode(phoneNumber, 'HAXTAN13');
             
             session.pairingCode = pairingCode;
             session.status = 'waiting_for_auth';

@@ -3,20 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tanu Xai - WhatsApp Session Generator</title>
+    <title>HAXTAN13 - WhatsApp Session Generator</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Tanu Xai</h1>
+            <h1>HAXTAN13</h1>
             <p class="subtitle">WhatsApp Session Generator</p>
+            <div class="feature-badges">
+                <span class="badge">
+                    <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                    Secure
+                </span>
+                <span class="badge">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                    Fast
+                </span>
+                <span class="badge">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                    Encrypted
+                </span>
+            </div>
         </header>
 
         <main>
             <!-- Step 1: Enter Phone Number -->
             <section id="step-phone" class="step active">
-                <h2>Enter WhatsApp Number</h2>
+                <h2>Connect WhatsApp</h2>
+                <p class="step-description">Enter your WhatsApp number to generate a pairing code</p>
                 <form id="phone-form">
                     <div class="input-group">
                         <input 
@@ -36,19 +51,24 @@
 
             <!-- Step 2: Show Pairing Code -->
             <section id="step-code" class="step">
-                <h2>Your Pairing Code</h2>
+                <h2>Pairing Code Ready</h2>
+                <p class="step-description">Enter this code in WhatsApp to link your device</p>
+                
                 <div class="pairing-code-display">
+                    <div class="code-label">Your Pairing Code</div>
                     <code id="pairing-code">---- ----</code>
                 </div>
+                
+                <button id="copy-btn" class="copy-btn">Copy Code</button>
                 
                 <div class="instructions">
                     <h3>How to link your device:</h3>
                     <ol>
-                        <li>Open WhatsApp on your phone</li>
+                        <li>Open <strong>WhatsApp</strong> on your phone</li>
                         <li>Go to <strong>Settings</strong> → <strong>Linked Devices</strong></li>
                         <li>Tap <strong>Link a Device</strong></li>
                         <li>Select <strong>Link with phone number</strong></li>
-                        <li>Enter this code</li>
+                        <li>Enter the code shown above</li>
                     </ol>
                 </div>
 
