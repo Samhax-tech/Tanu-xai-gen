@@ -502,11 +502,14 @@ class BaileysService {
                 generation: currentGeneration
             });
 
-            // Mark connection as ready when open
+            // Mark connection as ready when open (for pairing readiness)
             if (connection === 'open') {
                 session.connectionReady = true;
-                session.status = 'waiting_for_pairing';
-                logger.info('Connection ready for pairing', { sessionId, generation: currentGeneration });
+                // Only set waiting_for_pairing if we haven't started pairing yet
+                if (session.status === 'initializing' || session.status === 'connecting') {
+                    session.status = 'waiting_for_pairing';
+                    logger.info('Connection ready for pairing', { sessionId, generation: currentGeneration });
+                }
             }
 
             if (connection === 'close') {
@@ -570,30 +573,25 @@ class BaileysService {
                     return;
                 }
             }
-
-            if (connection === 'open') {
-                // Connection successful - only set connected if not already in pairing flow
-                if (session.status !== 'waiting_for_auth' && session.status !== 'pairing_requested') {
-                    session.status = 'connected';
-                    
-                    // Get user info
-                    const me = sock.user;
-                    if (me?.id) {
-                        await this.supabase.setAuthenticatedUser(
-                            sessionId, 
-                            me.id, 
-                            me.name || me.notify
-                        );
-                        logger.info('Authentication complete', { sessionId, jid: me.id });
-                    }
-                }
-            }
         });
 
-        // Handle credentials update
+        // Handle successful authentication (creds.update with me info)
         sock.ev.on('creds.update', async () => {
             try {
                 await session.authState.saveCreds();
+                
+                // Check if we're now authenticated (creds.me is set)
+                if (session.authState.creds?.me?.id && session.status !== 'connected') {
+                    session.status = 'connected';
+                    const me = session.authState.creds.me;
+                    
+                    await this.supabase.setAuthenticatedUser(
+                        sessionId, 
+                        me.id, 
+                        me.name || me.notify
+                    );
+                    logger.info('Authentication complete', { sessionId, jid: me.id });
+                }
             } catch (error) {
                 logger.error('Failed to save credentials on update', { sessionId, error: error.message });
             }
