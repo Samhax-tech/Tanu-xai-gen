@@ -3,18 +3,24 @@
 
 let baileysModule = null;
 let initAuthCredsFn = null;
+let baileysLoadingPromise = null;
 
 async function getBaileys() {
     if (!baileysModule) {
-        baileysModule = await import('ourin-baileys');
-        // Extract initAuthCreds from the utils export
-        if (baileysModule.initAuthCreds) {
-            initAuthCredsFn = baileysModule.initAuthCreds;
-        } else {
-            // Try to import from utils subpath
-            const utils = await import('ourin-baileys/lib/Utils/auth-utils.js');
-            initAuthCredsFn = utils.initAuthCreds;
+        if (!baileysLoadingPromise) {
+            baileysLoadingPromise = (async () => {
+                baileysModule = await import('ourin-baileys');
+                // Extract initAuthCreds from the utils export
+                if (baileysModule.initAuthCreds) {
+                    initAuthCredsFn = baileysModule.initAuthCreds;
+                } else {
+                    // Try to import from utils subpath
+                    const utils = await import('ourin-baileys/lib/Utils/auth-utils.js');
+                    initAuthCredsFn = utils.initAuthCreds;
+                }
+            })();
         }
+        await baileysLoadingPromise;
     }
     return baileysModule;
 }

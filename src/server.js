@@ -70,7 +70,8 @@ class Server {
             },
             standardHeaders: true,
             legacyHeaders: false,
-            validate: { xForwardedForHeader: true }
+            keyGenerator: (req) => req.ip, // Use resolved IP instead of trusting X-Forwarded-For blindly
+            validate: { xForwardedForHeader: false } // Disable X-Forwarded-For validation since we use specific trust proxy
         });
 
         // Body parsing
