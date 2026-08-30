@@ -9,27 +9,27 @@ async function getBaileys() {
     if (!baileysModule) {
         if (!baileysLoadingPromise) {
             baileysLoadingPromise = (async () => {
-                // Use the 'ourin' package alias
+                // Use the 'ourin' package alias (configured in package.json as npm:ourin-baileys@9.0.21)
                 baileysModule = await import('ourin');
                 
                 // Extract initAuthCreds from the main export
-                // ourin-baileys exports initAuthCreds through Utils/index.js -> index.js
-                if (typeof baileysModule.initAuthCreds === 'function') {
-                    initAuthCredsFn = baileysModule.initAuthCreds;
-                } else {
-                    // Fallback: try direct utils import
-                    const utils = await import('ourin/lib/Utils/auth-utils.js');
-                    initAuthCredsFn = utils.initAuthCreds;
-                }
-                
-                // Verify we have the required function
-                if (typeof initAuthCredsFn !== 'function') {
+                if (typeof baileysModule.initAuthCreds !== 'function') {
                     throw new Error('Failed to load initAuthCreds from ourin-baileys');
+                }
+                initAuthCredsFn = baileysModule.initAuthCreds;
+                
+                // Verify we have the required functions
+                if (typeof baileysModule.makeWASocket !== 'function') {
+                    throw new Error('Failed to load makeWASocket from ourin-baileys');
+                }
+                if (typeof baileysModule.fetchLatestBaileysVersion !== 'function') {
+                    throw new Error('Failed to load fetchLatestBaileysVersion from ourin-baileys');
                 }
                 
                 logger.info('Baileys module loaded successfully', { 
                     hasMakeWASocket: typeof baileysModule.makeWASocket === 'function',
-                    hasInitAuthCreds: typeof initAuthCredsFn === 'function'
+                    hasInitAuthCreds: typeof initAuthCredsFn === 'function',
+                    hasDisconnectReason: !!baileysModule.DisconnectReason
                 });
             })();
         }
@@ -39,7 +39,7 @@ async function getBaileys() {
 }
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
