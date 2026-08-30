@@ -30,8 +30,9 @@ class Server {
      * Setup Express middleware
      */
     setupMiddleware() {
-        // Trust Railway's reverse proxy for correct client IP detection
-        this.app.set('trust proxy', true);
+        // Trust Railway's reverse proxy with explicit loopback + unique configuration
+        // This prevents ERR_ERL_PERMISSIVE_TRUST_PROXY while maintaining correct IP detection
+        this.app.set('trust proxy', ['loopback', 'uniquelocal']);
 
         // Security headers
         this.app.use(helmet({
@@ -55,7 +56,8 @@ class Server {
                 error: 'Too many requests, please try again later'
             },
             standardHeaders: true,
-            legacyHeaders: false
+            legacyHeaders: false,
+            validate: { xForwardedForHeader: true } // Explicit validation for Railway proxy
         });
         this.app.use(limiter);
 
@@ -67,7 +69,8 @@ class Server {
                 error: 'Too many session creation attempts, please try again later'
             },
             standardHeaders: true,
-            legacyHeaders: false
+            legacyHeaders: false,
+            validate: { xForwardedForHeader: true }
         });
 
         // Body parsing
