@@ -11,14 +11,26 @@ async function getBaileys() {
             baileysLoadingPromise = (async () => {
                 // Use the 'ourin' package alias
                 baileysModule = await import('ourin');
-                // Extract initAuthCreds from the utils export
-                if (baileysModule.initAuthCreds) {
+                
+                // Extract initAuthCreds from the main export
+                // ourin-baileys exports initAuthCreds through Utils/index.js -> index.js
+                if (typeof baileysModule.initAuthCreds === 'function') {
                     initAuthCredsFn = baileysModule.initAuthCreds;
                 } else {
-                    // Try to import from utils subpath
+                    // Fallback: try direct utils import
                     const utils = await import('ourin/lib/Utils/auth-utils.js');
                     initAuthCredsFn = utils.initAuthCreds;
                 }
+                
+                // Verify we have the required function
+                if (typeof initAuthCredsFn !== 'function') {
+                    throw new Error('Failed to load initAuthCreds from ourin-baileys');
+                }
+                
+                logger.info('Baileys module loaded successfully', { 
+                    hasMakeWASocket: typeof baileysModule.makeWASocket === 'function',
+                    hasInitAuthCreds: typeof initAuthCredsFn === 'function'
+                });
             })();
         }
         await baileysLoadingPromise;
@@ -273,21 +285,13 @@ class BaileysService {
         // Get latest Baileys version
         const { version } = await baileys.fetchLatestBaileysVersion();
 
-        // Create Baileys socket
-        const sock = baileys.makeWASocket({
-            version,
-            auth: state,
-            printQRInTerminal: false,
-            browser: ['Tanu Xai Session', 'Chrome', '120.0.0'],
-            markOnlineOnConnect: false
-        });
-
         // Select a random branded pairing code for this session
         const selectedCode = this.selectRandomBrandedCode();
 
-        // Store session info with enhanced state tracking
+        // Store session info with enhanced state tracking BEFORE creating socket
+        // This ensures handlers can access session data immediately
         this.sessions.set(sessionId, {
-            sock,
+            sock: null, // Will be set after creation
             authState,
             phoneNumber,
             status: 'initializing',
@@ -300,14 +304,28 @@ class BaileysService {
             generation: 1
         });
 
-        logger.info('Session created', { sessionId, selectedBrandedCode: selectedCode });
+        // Create Baileys socket
+        const sock = baileys.makeWASocket({
+            version,
+            auth: state,
+            printQRInTerminal: false,
+            browser: ['Tanu Xai Session', 'Chrome', '120.0.0'],
+            markOnlineOnConnect: false
+        });
+
+        // CRITICAL: Attach handlers IMMEDIATELY after socket creation
+        // This prevents missing early connection events
+        this.sessions.get(sessionId).sock = sock;
+        this.setupConnectionHandlers(sessionId, 1);
+
+        logger.info('Session created with handlers attached', { sessionId, selectedBrandedCode: selectedCode });
 
         return { sessionId };
     }
 
     /**
      * Request pairing code for a session
-     * Waits for WebSocket connection to be ready before requesting
+     * Does NOT wait for connection === "open" - requests pairing code when socket is ready for pairing
      * Uses the session's pre-selected branded code
      * @param {string} sessionId - Session identifier
      * @returns {Promise<string>} - Pairing code
@@ -328,13 +346,13 @@ class BaileysService {
         // Prevent concurrent pairing requests with lock
         if (session.pairingInProgress) {
             logger.warn('Pairing already in progress', { sessionId });
-            throw new Error('Pairing code request already in progress');
+            throw new Error('PAIRING_IN_PROGRESS');
         }
 
         // Check if pairing was already requested (stale socket protection)
-        if (session.pairingRequested && !session.connectionReady) {
+        if (session.pairingRequested) {
             logger.warn('Pairing already requested for this session', { sessionId });
-            throw new Error('Pairing already requested, waiting for connection');
+            throw new Error('Pairing already requested, waiting for response');
         }
 
         // Update status
@@ -344,27 +362,6 @@ class BaileysService {
         session.pairingRequested = true;
 
         try {
-            // Wait for connection to be ready using actual connection.update event
-            // Timeout after 30 seconds to prevent hanging forever
-            const timeoutMs = 30000;
-            const startTime = Date.now();
-            
-            while (!session.connectionReady) {
-                if (Date.now() - startTime > timeoutMs) {
-                    throw new Error('Connection timeout. Please try again.');
-                }
-                
-                // Check if socket is still valid (generation check)
-                if (!session.sock || session.generation < 1) {
-                    throw new Error('Socket invalidated during readiness wait');
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-            // Final generation check before proceeding
-            const currentGeneration = session.generation;
-            
             // Request pairing code from Baileys using the session's selected branded code
             // The phone number should be without the leading +
             const phoneNumber = session.phoneNumber.replace(/^\+/, '');
@@ -384,8 +381,12 @@ class BaileysService {
                 throw new Error('Pairing code must contain only uppercase letters and digits');
             }
             
+            // Capture generation for stale check
+            const currentGeneration = session.generation;
+            
             // Use the pre-selected branded code for this session
             // ourin-baileys v9.0.21 supports customPairingCode as second parameter (8 chars)
+            // This can be called as soon as the socket is created - no need to wait for "open"
             const pairingCode = await session.sock.requestPairingCode(phoneNumber, selectedCode);
             
             // Verify we're still on the same generation (socket wasn't recreated)
@@ -420,6 +421,8 @@ class BaileysService {
             throw error;
         } finally {
             session.pairingInProgress = false;
+        }
+    }
         }
     }
 

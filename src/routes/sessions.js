@@ -23,6 +23,7 @@ class SessionRoutes {
         /**
          * POST /api/session/start
          * Start a new session with phone number
+         * Handlers are attached in createSession automatically
          */
         this.router.post('/start', async (req, res) => {
             try {
@@ -42,11 +43,8 @@ class SessionRoutes {
                     });
                 }
 
-                // Create session
+                // Create session (handlers attached automatically inside createSession)
                 const result = await this.baileysService.createSession(validation.normalized);
-                
-                // Setup connection handlers immediately after session creation
-                this.baileysService.setupConnectionHandlers(result.sessionId);
 
                 logger.info('Session start requested', { sessionId: result.sessionId });
 
@@ -57,8 +55,8 @@ class SessionRoutes {
             } catch (error) {
                 logger.error('Failed to start session', { error: error.message });
                 res.status(500).json({
-                    error: 'Failed to start session',
-                    message: error.message
+                    error: 'SESSION_START_FAILED',
+                    message: 'Failed to initialize WhatsApp session. Please try again.'
                 });
             }
         });
