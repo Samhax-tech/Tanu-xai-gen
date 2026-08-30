@@ -107,7 +107,7 @@ function maskPhoneNumber(phoneNumber) {
     return `***${lastFour}`;
 }
 
-module.exports = {
+export {
     normalizePhoneNumber,
     validatePhoneNumber,
     maskPhoneNumber

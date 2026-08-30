@@ -4,25 +4,36 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HAXTAN13 - WhatsApp Session Generator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>HAXTAN13</h1>
-            <p class="subtitle">WhatsApp Session Generator</p>
+            <div class="logo-container">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="currentColor"/>
+                        <path d="M12 6C8.69 6 6 8.69 6 12C6 15.31 8.69 18 12 18C15.31 18 18 15.31 18 12C18 8.69 15.31 6 12 6ZM12 16C9.79 16 8 14.21 8 12C8 9.79 9.79 8 12 8C14.21 8 16 9.79 16 12C16 14.21 14.21 16 12 16Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <h1>HAXTAN13</h1>
+            </div>
+            <p class="subtitle">Premium WhatsApp Session Generator</p>
             <div class="feature-badges">
-                <span class="badge">
+                <span class="badge badge-success">
                     <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
-                    Secure
+                    Secure End-to-End
                 </span>
-                <span class="badge">
-                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-                    Fast
+                <span class="badge badge-primary">
+                    <svg viewBox="0 0 24 24"><path d="M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.48 2.54l2.6 1.53c.56-1.24.88-2.62.88-4.07 0-5.19-3.95-9.45-9-9.95zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.06.5-9 4.76-9 9.95 0 5.52 4.47 10 9.99 10 3.31 0 6.24-1.61 8.06-4.09l-2.6-1.53C16.87 17.74 14.58 19 12 19z"/></svg>
+                    Instant Setup
                 </span>
-                <span class="badge">
-                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-                    Encrypted
+                <span class="badge badge-warning">
+                    <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                    Encrypted Storage
                 </span>
             </div>
         </header>
@@ -30,79 +41,199 @@
         <main>
             <!-- Step 1: Enter Phone Number -->
             <section id="step-phone" class="step active">
-                <h2>Connect WhatsApp</h2>
-                <p class="step-description">Enter your WhatsApp number to generate a pairing code</p>
+                <div class="step-header">
+                    <div class="step-icon step-icon-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+                        </svg>
+                    </div>
+                    <h2>Connect Your Device</h2>
+                </div>
+                <p class="step-description">Enter your WhatsApp number to generate a secure pairing code for multi-device linking</p>
                 <form id="phone-form">
                     <div class="input-group">
+                        <label for="phone-input" class="input-label">Phone Number (with country code)</label>
                         <input 
                             type="tel" 
                             id="phone-input" 
-                            placeholder="+92XXXXXXXXXX" 
+                            placeholder="+1 234 567 8900" 
                             autocomplete="tel"
                             required
                         >
+                        <div class="input-hint">Example: +1 234 567 8900 (include country code, no leading zero)</div>
                     </div>
-                    <button type="submit" id="generate-btn">
+                    <button type="submit" id="generate-btn" class="btn btn-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
                         Generate Pairing Code
                     </button>
                 </form>
                 <div id="phone-error" class="error-message"></div>
+                
+                <div class="info-cards">
+                    <div class="info-card">
+                        <div class="info-icon">🔒</div>
+                        <div class="info-content">
+                            <strong>Secure</strong>
+                            <span>Your credentials are encrypted and never exposed</span>
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-icon">⚡</div>
+                        <div class="info-content">
+                            <strong>Fast</strong>
+                            <span>Get connected in under 30 seconds</span>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <!-- Step 2: Show Pairing Code -->
             <section id="step-code" class="step">
-                <h2>Pairing Code Ready</h2>
-                <p class="step-description">Enter this code in WhatsApp to link your device</p>
+                <div class="step-header">
+                    <div class="step-icon step-icon-success">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    </div>
+                    <h2>Pairing Code Ready</h2>
+                </div>
+                <p class="step-description">Copy this code and enter it in WhatsApp to link your device</p>
                 
                 <div class="pairing-code-display">
-                    <div class="code-label">Your Pairing Code</div>
+                    <div class="code-header">
+                        <span class="code-label">Your Pairing Code</span>
+                        <span class="code-badge">Valid for 5 minutes</span>
+                    </div>
                     <code id="pairing-code">---- ----</code>
+                    <div class="code-actions">
+                        <button id="copy-btn" class="btn btn-secondary btn-sm">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-sm">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                            </svg>
+                            Copy Code
+                        </button>
+                    </div>
                 </div>
                 
-                <button id="copy-btn" class="copy-btn">Copy Code</button>
-                
                 <div class="instructions">
-                    <h3>How to link your device:</h3>
-                    <ol>
-                        <li>Open <strong>WhatsApp</strong> on your phone</li>
-                        <li>Go to <strong>Settings</strong> → <strong>Linked Devices</strong></li>
-                        <li>Tap <strong>Link a Device</strong></li>
-                        <li>Select <strong>Link with phone number</strong></li>
-                        <li>Enter the code shown above</li>
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="inline-icon"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg> How to link your device:</h3>
+                    <ol class="steps-list">
+                        <li class="step-item">
+                            <span class="step-number">1</span>
+                            <span class="step-text">Open <strong>WhatsApp</strong> on your phone</span>
+                        </li>
+                        <li class="step-item">
+                            <span class="step-number">2</span>
+                            <span class="step-text">Go to <strong>Settings</strong> → <strong>Linked Devices</strong></span>
+                        </li>
+                        <li class="step-item">
+                            <span class="step-number">3</span>
+                            <span class="step-text">Tap <strong>Link a Device</strong></span>
+                        </li>
+                        <li class="step-item">
+                            <span class="step-number">4</span>
+                            <span class="step-text">Select <strong>Link with phone number</strong></span>
+                        </li>
+                        <li class="step-item">
+                            <span class="step-number">5</span>
+                            <span class="step-text">Enter the code shown above</span>
+                        </li>
                     </ol>
                 </div>
 
                 <div class="status-container">
-                    <p id="status-text">Waiting for authentication...</p>
-                    <div class="spinner" id="auth-spinner"></div>
+                    <div class="status-content">
+                        <div class="spinner spinner-primary" id="auth-spinner"></div>
+                        <p id="status-text">Waiting for authentication...</p>
+                    </div>
+                    <div class="status-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill"></div>
+                        </div>
+                    </div>
                 </div>
             </section>
 
             <!-- Step 3: Connected -->
             <section id="step-connected" class="step">
-                <div class="success-icon">✓</div>
-                <h2>Connected!</h2>
-                <p id="connected-info"></p>
+                <div class="success-animation">
+                    <div class="success-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    </div>
+                    <div class="success-ring"></div>
+                </div>
+                <h2>Successfully Connected!</h2>
+                <p id="connected-info" class="connected-details"></p>
+                <div class="success-card">
+                    <div class="success-row">
+                        <span class="success-label">Status</span>
+                        <span class="success-value success-value-green">Active</span>
+                    </div>
+                    <div class="success-row">
+                        <span class="success-label">Session ID</span>
+                        <code class="success-code" id="session-id-display"></code>
+                    </div>
+                    <div class="success-row">
+                        <span class="success-label">Connected At</span>
+                        <span class="success-value" id="connected-time"></span>
+                    </div>
+                </div>
                 <p class="safe-note">
-                    Your session has been securely stored and is ready for use with the Tanu Xai bot.
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="inline-icon"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    Your session has been securely stored with end-to-end encryption and is ready for use with the Tanu Xai bot.
                 </p>
             </section>
 
             <!-- Error State -->
             <section id="step-error" class="step">
-                <div class="error-icon">✕</div>
+                <div class="error-animation">
+                    <div class="error-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="15" y1="9" x2="9" y2="15"/>
+                            <line x1="9" y1="9" x2="15" y2="15"/>
+                        </svg>
+                    </div>
+                </div>
                 <h2>Connection Failed</h2>
-                <p id="error-message"></p>
-                <button onclick="location.reload()" class="retry-btn">Try Again</button>
+                <p id="error-message" class="error-details"></p>
+                <div class="error-suggestions">
+                    <h4>Try these steps:</h4>
+                    <ul>
+                        <li>Check your internet connection</li>
+                        <li>Verify your phone number includes the country code</li>
+                        <li>Make sure WhatsApp is installed on your phone</li>
+                        <li>Wait a moment and try again</li>
+                    </ul>
+                </div>
+                <button onclick="location.reload()" class="btn btn-primary btn-lg">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
+                        <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                    Try Again
+                </button>
             </section>
         </main>
 
         <footer>
-            <p>Owner: Arman HTX | Owner's Owner: Tanu Darling</p>
-            <p class="disclaimer">
-                This session generator is for authentication only. 
-                Your credentials are never exposed to the browser.
-            </p>
+            <div class="footer-content">
+                <p class="owner-info">
+                    <span class="owner-label">Owner:</span> Arman HTX
+                    <span class="owner-divider">|</span>
+                    <span class="owner-label">Owner's Owner:</span> Tanu Darling
+                </p>
+                <p class="disclaimer">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="inline-icon-sm"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    This session generator is for authentication only. Your credentials are encrypted and never exposed to the browser.
+                </p>
+                <p class="copyright">© 2024 HAXTAN13. All rights reserved.</p>
+            </div>
         </footer>
     </div>
 

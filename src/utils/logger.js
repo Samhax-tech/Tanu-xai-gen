@@ -1,4 +1,4 @@
-const pino = require('pino');
+import pino from 'pino';
 
 const logger = pino({
     level: process.env.LOG_LEVEL || 'info',
@@ -21,7 +21,7 @@ const logLevels = {
  * Structured logger with safe logging
  * Never logs sensitive data like pairing codes, auth credentials, or keys
  */
-module.exports = {
+export default {
     /**
      * Log an info message
      * @param {string} message 

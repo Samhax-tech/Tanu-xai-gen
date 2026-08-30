@@ -2,6 +2,7 @@
   "name": "tanu-xai-session-generator",
   "version": "1.0.0",
   "description": "WhatsApp Session Generator for Tanu Xai Bot",
+  "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -22,7 +23,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
-    "ourin-baileys": "^9.0.21",
+    "ourin": "npm:ourin-baileys@latest",
     "pino": "^10.3.1",
     "ws": "^8.21.3"
   },

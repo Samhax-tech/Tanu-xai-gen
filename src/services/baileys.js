@@ -9,13 +9,14 @@ async function getBaileys() {
     if (!baileysModule) {
         if (!baileysLoadingPromise) {
             baileysLoadingPromise = (async () => {
-                baileysModule = await import('ourin-baileys');
+                // Use the 'ourin' package alias
+                baileysModule = await import('ourin');
                 // Extract initAuthCreds from the utils export
                 if (baileysModule.initAuthCreds) {
                     initAuthCredsFn = baileysModule.initAuthCreds;
                 } else {
                     // Try to import from utils subpath
-                    const utils = await import('ourin-baileys/lib/Utils/auth-utils.js');
+                    const utils = await import('ourin/lib/Utils/auth-utils.js');
                     initAuthCredsFn = utils.initAuthCreds;
                 }
             })();
@@ -25,8 +26,13 @@ async function getBaileys() {
     return baileysModule;
 }
 
-const logger = require('../utils/logger');
-const SupabaseService = require('./supabase');
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+import logger from '../utils/logger.js';
+import SupabaseService from './supabase.js';
 
 /**
  * Custom auth state implementation using Supabase for persistence
@@ -647,4 +653,4 @@ class BaileysService {
     }
 }
 
-module.exports = BaileysService;
+export default BaileysService;

@@ -1,7 +1,7 @@
-const { createClient } = require('@supabase/supabase-js');
-const ws = require('ws');
-const config = require('../config/env');
-const logger = require('../utils/logger');
+import { createClient } from '@supabase/supabase-js';
+import ws from 'ws';
+import config from '../config/env.js';
+import logger from '../utils/logger.js';
 
 /**
  * Supabase client for persistent authentication state storage
@@ -388,4 +388,4 @@ class SupabaseService {
     }
 }
 
-module.exports = SupabaseService;
+export default SupabaseService;
