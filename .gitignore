@@ -1,18 +1,5 @@
-```
-# Dependencies
-node_modules/
-
-# Logs and temp files
-*.log
-
-# Environment variables
-.env
-.env.local
-*.env.*
-
-# Package lock files
-package-lock.json
-
-# Build artifacts from the deleted module
-node_modules/ourin-baileys/
+```javascript
+// No build artifacts, dependencies, or temp files detected in changes
+// Only source files (app.js, baileys.js) were modified
+// No ignores needed
 ```
