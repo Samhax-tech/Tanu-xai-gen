@@ -164,6 +164,8 @@ async function checkStatus() {
 
         updateStatusUI(status);
 
+        // Only show connected state when status is actually 'connected'
+        // This means user has entered the pairing code in WhatsApp
         if (status.status === 'connected') {
             stopStatusPolling();
             showConnected(status);
@@ -188,6 +190,7 @@ function updateStatusUI(status) {
         'initializing': 'Initializing session...',
         'connecting': 'Connecting to WhatsApp...',
         'requesting_pairing_code': 'Requesting pairing code...',
+        'waiting_for_pairing': 'Ready for pairing',
         'waiting_for_auth': 'Waiting for authentication...',
         'authenticating': 'Authenticating...',
         'reconnecting': 'Reconnecting...',

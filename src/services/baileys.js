@@ -525,6 +525,7 @@ class BaileysService {
             });
 
             // Mark connection as ready when open (for pairing readiness)
+            // Note: ourin-baileys uses 'connecting' -> 'open' flow
             if (connection === 'open') {
                 session.connectionReady = true;
                 // Only set waiting_for_pairing if we haven't started pairing yet
@@ -603,16 +604,25 @@ class BaileysService {
                 await session.authState.saveCreds();
                 
                 // Check if we're now authenticated (creds.me is set)
+                // This indicates successful WhatsApp pairing/authentication
                 if (session.authState.creds?.me?.id && session.status !== 'connected') {
-                    session.status = 'connected';
-                    const me = session.authState.creds.me;
-                    
-                    await this.supabase.setAuthenticatedUser(
-                        sessionId, 
-                        me.id, 
-                        me.name || me.notify
-                    );
-                    logger.info('Authentication complete', { sessionId, jid: me.id });
+                    // Only mark as connected if we were previously waiting for auth
+                    // This prevents false "connected" status during pairing code generation
+                    if (session.status === 'waiting_for_auth' || session.status === 'authenticating' || session.status === 'reconnecting') {
+                        session.status = 'connected';
+                        const me = session.authState.creds.me;
+                        
+                        await this.supabase.setAuthenticatedUser(
+                            sessionId, 
+                            me.id, 
+                            me.name || me.notify
+                        );
+                        logger.info('Authentication complete - session connected', { sessionId, jid: me.id });
+                    } else if (session.status === 'initializing' || session.status === 'requesting_pairing_code') {
+                        // creds.me might be set from previous session data during initialization
+                        // Don't change status yet, wait for explicit connection confirmation
+                        logger.debug('Credentials loaded during initialization', { sessionId });
+                    }
                 }
             } catch (error) {
                 logger.error('Failed to save credentials on update', { sessionId, error: error.message });
