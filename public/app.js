@@ -287,9 +287,9 @@ phoneInput.addEventListener('input', (e) => {
     
     // Allow only digits and one leading +
     if (value.startsWith('+')) {
-        value = '+' + value.slice(1).replace(/[^\\d]/g, '');
+        value = '+' + value.slice(1).replace(/[^\d]/g, '');
     } else {
-        value = value.replace(/[^\\d+]/g, '');
+        value = value.replace(/[^\d+]/g, '');
     }
     
     e.target.value = value;
