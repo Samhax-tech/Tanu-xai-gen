@@ -423,8 +423,6 @@ class BaileysService {
             session.pairingInProgress = false;
         }
     }
-        }
-    }
 
     /**
      * Get session status
