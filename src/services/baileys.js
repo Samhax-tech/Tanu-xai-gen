@@ -2,10 +2,19 @@
 // We'll use a lazy loading pattern with async initialization
 
 let baileysModule = null;
+let initAuthCredsFn = null;
 
 async function getBaileys() {
     if (!baileysModule) {
         baileysModule = await import('ourin-baileys');
+        // Extract initAuthCreds from the utils export
+        if (baileysModule.initAuthCreds) {
+            initAuthCredsFn = baileysModule.initAuthCreds;
+        } else {
+            // Try to import from utils subpath
+            const utils = await import('ourin-baileys/lib/Utils/auth-utils.js');
+            initAuthCredsFn = utils.initAuthCreds;
+        }
     }
     return baileysModule;
 }
@@ -43,8 +52,8 @@ class SupabaseAuthState {
             this.creds = this._deserializeCreds(existingCreds);
             logger.info('Loaded existing auth credentials', { sessionId: this.sessionId });
         } else {
-            // Initialize new credentials
-            this.creds = initAuthCreds();
+            // Initialize new credentials using the imported function
+            this.creds = initAuthCredsFn();
             logger.info('Initialized new auth credentials', { sessionId: this.sessionId });
         }
 
