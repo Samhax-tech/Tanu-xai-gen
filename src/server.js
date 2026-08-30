@@ -3,7 +3,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -74,7 +74,7 @@ class Server {
             },
             standardHeaders: true,
             legacyHeaders: false,
-            keyGenerator: (req) => req.ip, // Use resolved IP instead of trusting X-Forwarded-For blindly
+            keyGenerator: ipKeyGenerator(), // Properly handle IPv6 addresses
             validate: { xForwardedForHeader: false } // Disable X-Forwarded-For validation since we use specific trust proxy
         });
 
@@ -83,7 +83,7 @@ class Server {
         this.app.use(express.urlencoded({ extended: true }));
 
         // Static files
-        this.app.use(express.static(path.join(__dirname, '../public')));
+        this.app.use(express.static(join(__dirname, '../public')));
 
         // Apply session limiter to session start endpoint only
         this.app.use('/api/session/start', sessionLimiter);
@@ -102,7 +102,7 @@ class Server {
 
         // Serve index.html for root
         this.app.get('/', (req, res) => {
-            res.sendFile(path.join(__dirname, '../public/index.html'));
+            res.sendFile(join(__dirname, '../public/index.html'));
         });
 
         // 404 handler
