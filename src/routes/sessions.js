@@ -1,7 +1,14 @@
-const express = require('express');
+import express from 'express';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const router = express.Router();
-const { validatePhoneNumber } = require('../utils/phone');
-const logger = require('../utils/logger');
+
+import { validatePhoneNumber } from '../utils/phone.js';
+import logger from '../utils/logger.js';
 
 /**
  * Session routes for managing WhatsApp pairing code sessions
@@ -228,4 +235,4 @@ class SessionRoutes {
 // Initialize router
 SessionRoutes.prototype.router = router;
 
-module.exports = SessionRoutes;
+export default SessionRoutes;

@@ -1,16 +1,20 @@
-require('dotenv').config();
+import 'dotenv/config';
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const path = require('path');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-const config = require('./config/env');
-const logger = require('./utils/logger');
-const BaileysService = require('./services/baileys');
-const healthRoutes = require('./routes/health');
-const SessionRoutes = require('./routes/sessions');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+import config from './config/env.js';
+import logger from './utils/logger.js';
+import BaileysService from './services/baileys.js';
+import healthRoutes from './routes/health.js';
+import SessionRoutes from './routes/sessions.js';
 
 /**
  * Main Express server for Tanu Xai Session Generator
@@ -199,7 +203,7 @@ class Server {
     }
 }
 
-module.exports = Server;
+export default Server;
 
 // Start the server when run directly
 const server = new Server();
