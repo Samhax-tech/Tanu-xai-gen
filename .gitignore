@@ -1,5 +1,3 @@
-```javascript
-// No build artifacts, dependencies, or temp files detected in changes
-// Only source files (app.js, baileys.js) were modified
-// No ignores needed
-```
+node_modules/
+.env
+*.log
