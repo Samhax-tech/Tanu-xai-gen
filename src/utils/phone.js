@@ -1,114 +1,44 @@
-/**
- * Phone number validation and normalization utilities
- * Ensures phone numbers are in correct format for Baileys pairing code
- */
+import { AppError, ErrorCodes } from './errors.js';
 
 /**
- * Normalize a phone number by removing spaces, dashes, and other non-digit characters
- * @param {string} phoneNumber - Raw phone number input
- * @returns {string} - Normalized phone number (digits only, with leading + if present)
+ * Normalize a user-supplied phone number into the bare digit string
+ * Baileys/WhatsApp expects (no +, spaces, dashes, or parentheses).
+ *
+ * Accepts:  +92 300 1234567 | 923001234567 | +923001234567 | 03001234567
+ * Produces: 923001234567
  */
-function normalizePhoneNumber(phoneNumber) {
-    if (!phoneNumber || typeof phoneNumber !== 'string') {
-        return '';
-    }
+export function normalizePhoneNumber(raw) {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    throw new AppError(ErrorCodes.INVALID_PHONE_NUMBER, 'Phone number is required.');
+  }
 
-    // Trim whitespace
-    let normalized = phoneNumber.trim();
+  // Strip everything except digits.
+  let digits = raw.replace(/[^\d]/g, '');
 
-    // Check if starts with +
-    const hasPlus = normalized.startsWith('+');
+  if (digits.length === 0) {
+    throw new AppError(ErrorCodes.INVALID_PHONE_NUMBER, 'Phone number must contain digits.');
+  }
 
-    // Remove all non-digit characters except the leading +
-    normalized = normalized.replace(/[^\d]/g, '');
+  // Local Pakistani mobile numbers start with a trunk 0, e.g. 03001234567.
+  // Convert to international form only when it unambiguously matches that
+  // pattern (11 digits, leading 0, mobile prefix 3xx).
+  if (/^03\d{9}$/.test(digits)) {
+    digits = '92' + digits.slice(1);
+  }
 
-    // Add back the + if it was present
-    if (hasPlus) {
-        normalized = '+' + normalized;
-    }
+  // Final sanity check: E.164-ish, 10-15 digits, no leading zero.
+  if (!/^[1-9]\d{9,14}$/.test(digits)) {
+    throw new AppError(
+      ErrorCodes.INVALID_PHONE_NUMBER,
+      'Phone number must be a valid number with country code, e.g. 923001234567.'
+    );
+  }
 
-    return normalized;
+  return digits;
 }
 
-/**
- * Validate a phone number for WhatsApp pairing code
- * @param {string} phoneNumber - Phone number to validate
- * @returns {{valid: boolean, error?: string, normalized?: string}} - Validation result
- */
-function validatePhoneNumber(phoneNumber) {
-    if (!phoneNumber || typeof phoneNumber !== 'string') {
-        return {
-            valid: false,
-            error: 'Phone number is required'
-        };
-    }
-
-    const normalized = normalizePhoneNumber(phoneNumber);
-
-    // Remove leading + for digit count
-    const digitsOnly = normalized.replace(/^\+/, '');
-
-    // Check minimum length (country code + at least 7 digits)
-    if (digitsOnly.length < 8) {
-        return {
-            valid: false,
-            error: 'Phone number is too short. Include country code.'
-        };
-    }
-
-    // Check maximum length (international format max is 15 digits)
-    if (digitsOnly.length > 15) {
-        return {
-            valid: false,
-            error: 'Phone number is too long'
-        };
-    }
-
-    // Ensure all remaining characters are digits
-    if (!/^\d+$/.test(digitsOnly)) {
-        return {
-            valid: false,
-            error: 'Phone number must contain only digits'
-        };
-    }
-
-    // Must have a country code (not start with 0)
-    if (digitsOnly.startsWith('0')) {
-        return {
-            valid: false,
-            error: 'Phone number must include country code (do not start with 0)'
-        };
-    }
-
-    return {
-        valid: true,
-        normalized: '+' + digitsOnly
-    };
+/** Mask a normalized phone number for safe display/logging: 923001234567 -> ***4567 */
+export function maskPhoneNumber(digits) {
+  if (!digits || digits.length < 4) return '****';
+  return `***${digits.slice(-4)}`;
 }
-
-/**
- * Format phone number for display (mask sensitive parts)
- * @param {string} phoneNumber - Full phone number
- * @returns {string} - Masked phone number for safe display
- */
-function maskPhoneNumber(phoneNumber) {
-    if (!phoneNumber) {
-        return '***';
-    }
-
-    const digits = phoneNumber.replace(/\D/g, '');
-    
-    if (digits.length <= 4) {
-        return '***';
-    }
-
-    // Show last 4 digits, mask the rest
-    const lastFour = digits.slice(-4);
-    return `***${lastFour}`;
-}
-
-export {
-    normalizePhoneNumber,
-    validatePhoneNumber,
-    maskPhoneNumber
-};
