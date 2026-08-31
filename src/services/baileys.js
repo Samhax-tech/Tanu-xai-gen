@@ -1,667 +1,176 @@
-// ourin-baileys is an ESM module, so we need to handle it carefully
-// We'll use a lazy loading pattern with async initialization
+import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
+import { supabase } from './supabase.js';
+import { child } from '../utils/logger.js';
 
-let baileysModule = null;
-let initAuthCredsFn = null;
-let baileysLoadingPromise = null;
+const log = child({ module: 'auth-store' });
 
-async function getBaileys() {
-    if (!baileysModule) {
-        if (!baileysLoadingPromise) {
-            baileysLoadingPromise = (async () => {
-                // Use the 'ourin' package alias (configured in package.json as npm:ourin-baileys@9.0.21)
-                baileysModule = await import('ourin');
-                
-                // Extract initAuthCreds from the main export
-                if (typeof baileysModule.initAuthCreds !== 'function') {
-                    throw new Error('Failed to load initAuthCreds from ourin-baileys');
-                }
-                initAuthCredsFn = baileysModule.initAuthCreds;
-                
-                // Verify we have the required functions
-                if (typeof baileysModule.makeWASocket !== 'function') {
-                    throw new Error('Failed to load makeWASocket from ourin-baileys');
-                }
-                if (typeof baileysModule.fetchLatestBaileysVersion !== 'function') {
-                    throw new Error('Failed to load fetchLatestBaileysVersion from ourin-baileys');
-                }
-                
-                logger.info('Baileys module loaded successfully', { 
-                    hasMakeWASocket: typeof baileysModule.makeWASocket === 'function',
-                    hasInitAuthCreds: typeof initAuthCredsFn === 'function',
-                    hasDisconnectReason: !!baileysModule.DisconnectReason
-                });
-            })();
-        }
-        await baileysLoadingPromise;
-    }
-    return baileysModule;
+// Baileys' BufferJSON replacer/reviver correctly round-trips Buffers, typed
+// arrays and the library's internal key shapes. We reuse it instead of a
+// custom (fragile) serializer, but store the *parsed* JS object as jsonb
+// rather than a JSON string, since Postgres already gives us jsonb.
+function serialize(value) {
+  // JSON.stringify -> JSON.parse via BufferJSON.replacer gives us a plain
+  // object tree with Buffers turned into { type: 'Buffer', data: [...] }
+  // wrappers, which is what jsonb wants to store.
+  return JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 }
 
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-import logger from '../utils/logger.js';
-import SupabaseService from './supabase.js';
-
-/**
- * Custom auth state implementation using Supabase for persistence
- * Implements the Baileys AuthenticationState interface
- */
-class SupabaseAuthState {
-    constructor(sessionId, supabaseService) {
-        this.sessionId = sessionId;
-        this.supabase = supabaseService;
-        this.creds = null;
-        this.keys = {
-            get: async (type, ids) => {
-                return await this._getKeys(type, ids);
-            },
-            set: async (data) => {
-                await this._setKeys(data);
-            }
-        };
-    }
-
-    /**
-     * Initialize or load existing credentials
-     */
-    async init() {
-        const existingCreds = await this.supabase.getAuthCreds(this.sessionId);
-        
-        if (existingCreds) {
-            // Convert stored JSON back to proper format with Buffer support
-            this.creds = this._deserializeCreds(existingCreds);
-            logger.info('Loaded existing auth credentials', { sessionId: this.sessionId });
-        } else {
-            // Initialize new credentials using the imported function
-            this.creds = initAuthCredsFn();
-            logger.info('Initialized new auth credentials', { sessionId: this.sessionId });
-        }
-
-        return {
-            creds: this.creds,
-            keys: this.keys
-        };
-    }
-
-    /**
-     * Save credentials to Supabase
-     */
-    async saveCreds() {
-        if (!this.creds) {
-            return;
-        }
-
-        try {
-            // Serialize credentials for storage (handle Buffers)
-            const serializedCreds = this._serializeCreds(this.creds);
-            await this.supabase.storeAuthCreds(this.sessionId, serializedCreds);
-            logger.debug('Credentials saved to Supabase', { sessionId: this.sessionId });
-        } catch (error) {
-            logger.error('Failed to save credentials', { sessionId: this.sessionId, error: error.message });
-            throw error;
-        }
-    }
-
-    /**
-     * Get keys from Supabase
-     * @param {string} type - Key type (pre-key, session, sender-key, etc.)
-     * @param {string[]} ids - Array of key IDs
-     */
-    async _getKeys(type, ids) {
-        const storedKeys = await this.supabase.getKeys(this.sessionId, type, ids);
-        
-        const result = {};
-        for (const id of ids) {
-            if (storedKeys[id]) {
-                // Deserialize key data (handle base64 encoded buffers)
-                result[id] = this._deserializeKeyData(storedKeys[id]);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Set keys in Supabase
-     * @param {object} data - Keys data organized by type
-     */
-    async _setKeys(data) {
-        for (const [type, keys] of Object.entries(data)) {
-            for (const [id, keyData] of Object.entries(keys || {})) {
-                if (keyData === null) {
-                    // Delete the key
-                    await this.supabase.deleteKey(this.sessionId, type, id);
-                } else {
-                    // Store/update the key
-                    const serializedData = this._serializeKeyData(keyData);
-                    await this.supabase.storeKey(this.sessionId, type, id, serializedData);
-                }
-            }
-        }
-    }
-
-    /**
-     * Serialize credentials for storage (convert Buffers to base64)
-     */
-    _serializeCreds(creds) {
-        const serialized = {};
-        for (const [key, value] of Object.entries(creds)) {
-            if (value instanceof Buffer) {
-                serialized[key] = { __buffer: value.toString('base64') };
-            } else if (typeof value === 'object' && value !== null) {
-                serialized[key] = this._serializeObject(value);
-            } else {
-                serialized[key] = value;
-            }
-        }
-        return serialized;
-    }
-
-    /**
-     * Deserialize credentials from storage (restore Buffers)
-     */
-    _deserializeCreds(serialized) {
-        const creds = {};
-        for (const [key, value] of Object.entries(serialized)) {
-            if (value && typeof value === 'object' && value.__buffer) {
-                creds[key] = Buffer.from(value.__buffer, 'base64');
-            } else if (typeof value === 'object' && value !== null) {
-                creds[key] = this._deserializeObject(value);
-            } else {
-                creds[key] = value;
-            }
-        }
-        return creds;
-    }
-
-    /**
-     * Recursively serialize object with Buffer handling
-     */
-    _serializeObject(obj) {
-        if (obj instanceof Buffer) {
-            return { __buffer: obj.toString('base64') };
-        }
-        if (Array.isArray(obj)) {
-            return obj.map(item => this._serializeObject(item));
-        }
-        if (typeof obj === 'object' && obj !== null) {
-            const result = {};
-            for (const [key, value] of Object.entries(obj)) {
-                result[key] = this._serializeObject(value);
-            }
-            return result;
-        }
-        return obj;
-    }
-
-    /**
-     * Recursively deserialize object with Buffer restoration
-     */
-    _deserializeObject(obj) {
-        if (obj && typeof obj === 'object' && obj.__buffer) {
-            return Buffer.from(obj.__buffer, 'base64');
-        }
-        if (Array.isArray(obj)) {
-            return obj.map(item => this._deserializeObject(item));
-        }
-        if (typeof obj === 'object' && obj !== null) {
-            const result = {};
-            for (const [key, value] of Object.entries(obj)) {
-                result[key] = this._deserializeObject(value);
-            }
-            return result;
-        }
-        return obj;
-    }
-
-    /**
-     * Serialize key data for storage
-     */
-    _serializeKeyData(keyData) {
-        return this._serializeObject(keyData);
-    }
-
-    /**
-     * Deserialize key data from storage
-     */
-    _deserializeKeyData(serializedData) {
-        return this._deserializeObject(serializedData);
-    }
+function deserialize(value) {
+  if (value === null || value === undefined) return value;
+  return JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 }
 
 /**
- * Baileys service for managing WhatsApp connections
+ * Load (or initialize) the persistent credentials row for a session.
  */
-class BaileysService {
-    constructor() {
-        this.sessions = new Map();
-        this.supabase = new SupabaseService();
-        
-        // Branded pairing code pool - all codes must be exactly 8 characters
-        this.BRANDED_CODES = ['HAXTAN13', 'HAXTAN21', 'HAXTAN12', 'HAXTANXZ', 'TANNUHAX'];
-    }
+async function loadCreds(sessionId) {
+  const { data, error } = await supabase
+    .from('auth_credentials')
+    .select('creds')
+    .eq('session_id', sessionId)
+    .maybeSingle();
 
-    /**
-     * Generate a unique session ID
-     * @returns {string} - Session ID in format TX_xxxxx
-     */
-    generateSessionId() {
-        const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-        let result = '';
-        for (let i = 0; i < 8; i++) {
-            result += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        return `TX_${result}`;
-    }
+  if (error) {
+    log.error({ err: error.message, sessionId }, 'Failed to load auth_credentials');
+    throw error;
+  }
 
-    /**
-     * Select a random branded pairing code from the pool
-     * @returns {string} - Selected 8-character branded code
-     */
-    selectRandomBrandedCode() {
-        const randomIndex = Math.floor(Math.random() * this.BRANDED_CODES.length);
-        return this.BRANDED_CODES[randomIndex];
-    }
+  if (data?.creds) {
+    return deserialize(data.creds);
+  }
 
-    /**
-     * Create a new session and start Baileys connection
-     * @param {string} phoneNumber - Normalized phone number
-     * @returns {Promise<{sessionId: string, pairingCode?: string}>}
-     */
-    async createSession(phoneNumber) {
-        const baileys = await getBaileys();
-        const sessionId = this.generateSessionId();
-        
-        // Create session record in Supabase
-        await this.supabase.createSession(sessionId, phoneNumber);
-
-        // Initialize auth state
-        const authState = new SupabaseAuthState(sessionId, this.supabase);
-        const state = await authState.init();
-
-        // Get latest Baileys version
-        const { version } = await baileys.fetchLatestBaileysVersion();
-
-        // Select a random branded pairing code for this session
-        const selectedCode = this.selectRandomBrandedCode();
-
-        // Store session info with enhanced state tracking BEFORE creating socket
-        // This ensures handlers can access session data immediately
-        this.sessions.set(sessionId, {
-            sock: null, // Will be set after creation
-            authState,
-            phoneNumber,
-            status: 'initializing',
-            pairingCode: null,
-            selectedBrandedCode: selectedCode,
-            createdAt: Date.now(),
-            connectionReady: false,
-            pairingRequested: false,
-            pairingInProgress: false,
-            generation: 1
-        });
-
-        // Create Baileys socket
-        const sock = baileys.makeWASocket({
-            version,
-            auth: state,
-            printQRInTerminal: false,
-            browser: ['Tanu Xai Session', 'Chrome', '120.0.0'],
-            markOnlineOnConnect: false
-        });
-
-        // CRITICAL: Attach handlers IMMEDIATELY after socket creation
-        // This prevents missing early connection events
-        this.sessions.get(sessionId).sock = sock;
-        this.setupConnectionHandlers(sessionId, 1);
-
-        logger.info('Session created with handlers attached', { sessionId, selectedBrandedCode: selectedCode });
-
-        return { sessionId };
-    }
-
-    /**
-     * Request pairing code for a session
-     * Does NOT wait for connection === "open" - requests pairing code when socket is ready for pairing
-     * Uses the session's pre-selected branded code
-     * @param {string} sessionId - Session identifier
-     * @returns {Promise<string>} - Pairing code
-     */
-    async requestPairingCode(sessionId) {
-        const session = this.sessions.get(sessionId);
-        
-        if (!session) {
-            throw new Error('Session not found');
-        }
-
-        // If already have pairing code, return it (prevents regenerating)
-        if (session.pairingCode) {
-            logger.info('Returning existing pairing code', { sessionId });
-            return session.pairingCode;
-        }
-
-        // Prevent concurrent pairing requests with lock
-        if (session.pairingInProgress) {
-            logger.warn('Pairing already in progress', { sessionId });
-            throw new Error('PAIRING_IN_PROGRESS');
-        }
-
-        // Check if pairing was already requested (stale socket protection)
-        if (session.pairingRequested) {
-            logger.warn('Pairing already requested for this session', { sessionId });
-            throw new Error('Pairing already requested, waiting for response');
-        }
-
-        // Update status
-        await this.supabase.updateSessionStatus(sessionId, 'requesting_pairing_code');
-        session.status = 'requesting_pairing_code';
-        session.pairingInProgress = true;
-        session.pairingRequested = true;
-
-        try {
-            // Request pairing code from Baileys using the session's selected branded code
-            // The phone number should be without the leading +
-            const phoneNumber = session.phoneNumber.replace(/^\+/, '');
-            
-            // Validate the selected branded code before use
-            const selectedCode = session.selectedBrandedCode;
-            if (!selectedCode || typeof selectedCode !== 'string') {
-                throw new Error('Invalid pairing code configuration');
-            }
-            if (selectedCode.length !== 8) {
-                throw new Error('Pairing code must be exactly 8 characters');
-            }
-            if (!this.BRANDED_CODES.includes(selectedCode)) {
-                throw new Error('Pairing code is not from the valid branded pool');
-            }
-            if (!/^[A-Z0-9]{8}$/.test(selectedCode)) {
-                throw new Error('Pairing code must contain only uppercase letters and digits');
-            }
-            
-            // Capture generation for stale check
-            const currentGeneration = session.generation;
-            
-            // Use the pre-selected branded code for this session
-            // ourin-baileys v9.0.21 supports customPairingCode as second parameter (8 chars)
-            // This can be called as soon as the socket is created - no need to wait for "open"
-            const pairingCode = await session.sock.requestPairingCode(phoneNumber, selectedCode);
-            
-            // Verify we're still on the same generation (socket wasn't recreated)
-            if (session.generation !== currentGeneration) {
-                logger.warn('Socket generation changed during pairing request', { 
-                    sessionId, 
-                    originalGeneration: currentGeneration,
-                    currentGeneration: session.generation 
-                });
-                // Don't throw - the pairing code is still valid, just log the event
-            }
-            
-            session.pairingCode = pairingCode;
-            session.status = 'waiting_for_auth';
-
-            // Update status in Supabase
-            await this.supabase.updateSessionStatus(sessionId, 'waiting_for_auth', {
-                pairing_code_requested_at: new Date().toISOString()
-            });
-
-            logger.info('Pairing code requested successfully', { 
-                sessionId, 
-                selectedBrandedCode: session.selectedBrandedCode 
-            });
-
-            return pairingCode;
-        } catch (error) {
-            logger.error('Failed to request pairing code', { sessionId, error: error.message });
-            await this.supabase.updateSessionStatus(sessionId, 'failed', {
-                error_message: error.message
-            });
-            throw error;
-        } finally {
-            session.pairingInProgress = false;
-        }
-    }
-
-    /**
-     * Get session status
-     * @param {string} sessionId - Session identifier
-     * @returns {Promise<object>} - Session status info (safe, no credentials)
-     */
-    async getSessionStatus(sessionId) {
-        const sessionData = await this.supabase.getSession(sessionId);
-        
-        if (!sessionData) {
-            return null;
-        }
-
-        // Return only safe information
-        return {
-            sessionId: sessionData.session_id,
-            status: sessionData.status,
-            phone: this._maskPhone(sessionData.phone_number),
-            whatsappJid: sessionData.whatsapp_jid ? this._maskJid(sessionData.whatsapp_jid) : null,
-            whatsappName: sessionData.whatsapp_name,
-            createdAt: sessionData.created_at,
-            updatedAt: sessionData.updated_at
-        };
-    }
-
-    /**
-     * Mask phone number for safe display
-     */
-    _maskPhone(phoneNumber) {
-        if (!phoneNumber) return '***';
-        const digits = phoneNumber.replace(/\D/g, '');
-        if (digits.length <= 4) return '***';
-        return `***${digits.slice(-4)}`;
-    }
-
-    /**
-     * Mask JID for safe display
-     */
-    _maskJid(jid) {
-        if (!jid) return '***';
-        const parts = jid.split('@');
-        if (parts[0].length <= 4) return `***@${parts[1] || 's.whatsapp.net'}`;
-        return `***${parts[0].slice(-4)}@${parts[1] || 's.whatsapp.net'}`;
-    }
-
-    /**
-     * Stop and cleanup a session
-     * @param {string} sessionId - Session identifier
-     */
-    async stopSession(sessionId) {
-        const session = this.sessions.get(sessionId);
-        
-        if (session) {
-            try {
-                session.sock.end(undefined);
-            } catch (error) {
-                logger.warn('Error ending socket', { sessionId, error: error.message });
-            }
-            this.sessions.delete(sessionId);
-        }
-
-        await this.supabase.markDisconnected(sessionId, 'disconnected');
-        logger.info('Session stopped', { sessionId });
-    }
-
-    /**
-     * Setup connection event handlers for a session
-     * Includes generation tracking to prevent stale socket events from corrupting state
-     * @param {string} sessionId - Session identifier
-     * @param {number} generation - Socket generation number (default: 1)
-     */
-    setupConnectionHandlers(sessionId, generation = 1) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return;
-
-        const { sock } = session;
-        const currentGeneration = session.generation;
-
-        // Handle connection updates
-        sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr, isNewLogin } = update;
-
-            // Generation guard: ignore events from stale sockets
-            if (session.generation !== currentGeneration) {
-                logger.debug('Ignoring stale socket event', { 
-                    sessionId, 
-                    eventGeneration: currentGeneration,
-                    currentGeneration: session.generation 
-                });
-                return;
-            }
-
-            logger.info('Connection update', { 
-                sessionId, 
-                connection, 
-                hasLastDisconnect: !!lastDisconnect,
-                hasQR: !!qr,
-                isNewLogin,
-                generation: currentGeneration
-            });
-
-            // Mark connection as ready when open (for pairing readiness)
-            // Note: ourin-baileys uses 'connecting' -> 'open' flow
-            if (connection === 'open') {
-                session.connectionReady = true;
-                // Only set waiting_for_pairing if we haven't started pairing yet
-                if (session.status === 'initializing' || session.status === 'connecting') {
-                    session.status = 'waiting_for_pairing';
-                    logger.info('Connection ready for pairing', { sessionId, generation: currentGeneration });
-                }
-            }
-
-            if (connection === 'close') {
-                const baileys = await getBaileys();
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== baileys.DisconnectReason.loggedOut;
-
-                if (statusCode === baileys.DisconnectReason.loggedOut) {
-                    // User logged out from WhatsApp
-                    session.status = 'logged_out';
-                    await this.supabase.markDisconnected(sessionId, 'logged_out');
-                    logger.info('Session logged out', { sessionId });
-                    
-                    // Cleanup
-                    this.sessions.delete(sessionId);
-                    return;
-                }
-
-                if (shouldReconnect && statusCode !== baileys.DisconnectReason.restartRequired) {
-                    // Attempt reconnect with incremented generation
-                    session.status = 'reconnecting';
-                    session.connectionReady = false;
-                    await this.supabase.updateSessionStatus(sessionId, 'reconnecting');
-                    
-                    try {
-                        // Increment generation before creating new socket
-                        session.generation++;
-                        const newGeneration = session.generation;
-                        
-                        // Reconnect with same auth state
-                        const state = await session.authState.init();
-                        const { version } = await baileys.fetchLatestBaileysVersion();
-                        
-                        const newSock = baileys.makeWASocket({
-                            version,
-                            auth: state,
-                            printQRInTerminal: false,
-                            browser: ['Tanu Xai Session', 'Chrome', '120.0.0'],
-                            markOnlineOnConnect: false
-                        });
-
-                        session.sock = newSock;
-                        // Setup handlers with new generation - old handlers will be ignored due to generation check
-                        this.setupConnectionHandlers(sessionId, newGeneration);
-                        
-                        logger.info('Socket reconnected with new generation', { 
-                            sessionId, 
-                            oldGeneration: currentGeneration,
-                            newGeneration 
-                        });
-                    } catch (error) {
-                        logger.error('Reconnection failed', { sessionId, error: error.message });
-                        await this.supabase.markDisconnected(sessionId, 'reconnect_failed');
-                    }
-                    return;
-                } else {
-                    session.status = 'disconnected';
-                    session.connectionReady = false;
-                    await this.supabase.markDisconnected(sessionId, 'disconnected');
-                    this.sessions.delete(sessionId);
-                    return;
-                }
-            }
-        });
-
-        // Handle successful authentication (creds.update with me info)
-        sock.ev.on('creds.update', async () => {
-            try {
-                await session.authState.saveCreds();
-                
-                // Check if we're now authenticated (creds.me is set)
-                // This indicates successful WhatsApp pairing/authentication
-                if (session.authState.creds?.me?.id && session.status !== 'connected') {
-                    // Only mark as connected if we were previously waiting for auth
-                    // This prevents false "connected" status during pairing code generation
-                    if (session.status === 'waiting_for_auth' || session.status === 'authenticating' || session.status === 'reconnecting') {
-                        session.status = 'connected';
-                        const me = session.authState.creds.me;
-                        
-                        await this.supabase.setAuthenticatedUser(
-                            sessionId, 
-                            me.id, 
-                            me.name || me.notify
-                        );
-                        logger.info('Authentication complete - session connected', { sessionId, jid: me.id });
-                    } else if (session.status === 'initializing' || session.status === 'requesting_pairing_code') {
-                        // creds.me might be set from previous session data during initialization
-                        // Don't change status yet, wait for explicit connection confirmation
-                        logger.debug('Credentials loaded during initialization', { sessionId });
-                    }
-                }
-            } catch (error) {
-                logger.error('Failed to save credentials on update', { sessionId, error: error.message });
-            }
-        });
-    }
-
-    /**
-     * Get all active sessions
-     * @returns {Promise<Array>} - List of session statuses
-     */
-    async getAllSessions() {
-        const sessions = [];
-        for (const sessionId of this.sessions.keys()) {
-            const status = await this.getSessionStatus(sessionId);
-            if (status) {
-                sessions.push(status);
-            }
-        }
-        return sessions;
-    }
-
-    /**
-     * Cleanup expired/inactive sessions
-     */
-    async cleanupExpiredSessions() {
-        await this.supabase.cleanupExpiredSessions(7);
-        
-        // Also cleanup in-memory sessions older than 1 hour that never authenticated
-        const now = Date.now();
-        const oneHour = 60 * 60 * 1000;
-        
-        for (const [sessionId, session] of this.sessions.entries()) {
-            if (now - session.createdAt > oneHour && session.status !== 'connected') {
-                await this.stopSession(sessionId);
-                logger.info('Cleaned up expired session', { sessionId });
-            }
-        }
-    }
+  const fresh = initAuthCreds();
+  await saveCreds(sessionId, fresh);
+  return fresh;
 }
 
-export default BaileysService;
+async function saveCreds(sessionId, creds) {
+  const { error } = await supabase
+    .from('auth_credentials')
+    .upsert(
+      {
+        session_id: sessionId,
+        creds: serialize(creds),
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'session_id' }
+    );
+
+  if (error) {
+    log.error({ err: error.message, sessionId }, 'Failed to save auth_credentials');
+    throw error;
+  }
+}
+
+/**
+ * Fetch a set of key ids for a given key type for one session.
+ * Returns a map of id -> parsed key data (only for ids that exist).
+ */
+async function getKeys(sessionId, type, ids) {
+  if (!ids.length) return {};
+
+  const { data, error } = await supabase
+    .from('auth_keys')
+    .select('key_id, key_data')
+    .eq('session_id', sessionId)
+    .eq('key_type', type)
+    .in('key_id', ids);
+
+  if (error) {
+    log.error({ err: error.message, sessionId, type }, 'Failed to load auth_keys');
+    throw error;
+  }
+
+  const result = {};
+  for (const row of data || []) {
+    let value = deserialize(row.key_data);
+    if (type === 'app-state-sync-key' && value) {
+      // Baileys expects this shape to come back as the protobuf-decoded type;
+      // it round-trips fine through BufferJSON as long as it was serialized
+      // the same way going in.
+    }
+    result[row.key_id] = value;
+  }
+  return result;
+}
+
+/**
+ * Apply a Baileys keys.set(...) batch: { [type]: { [id]: data | null } }.
+ * A null value means "delete this key".
+ */
+async function setKeys(sessionId, data) {
+  const upserts = [];
+  const deletions = [];
+
+  for (const type of Object.keys(data)) {
+    for (const id of Object.keys(data[type])) {
+      const value = data[type][id];
+      if (value === null || value === undefined) {
+        deletions.push({ type, id });
+      } else {
+        upserts.push({
+          session_id: sessionId,
+          key_type: type,
+          key_id: id,
+          key_data: serialize(value),
+          updated_at: new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  if (upserts.length) {
+    const { error } = await supabase
+      .from('auth_keys')
+      .upsert(upserts, { onConflict: 'session_id,key_type,key_id' });
+    if (error) {
+      log.error({ err: error.message, sessionId }, 'Failed to upsert auth_keys');
+      throw error;
+    }
+  }
+
+  for (const { type, id } of deletions) {
+    const { error } = await supabase
+      .from('auth_keys')
+      .delete()
+      .eq('session_id', sessionId)
+      .eq('key_type', type)
+      .eq('key_id', id);
+    if (error) {
+      log.error({ err: error.message, sessionId, type, id }, 'Failed to delete auth_key');
+      throw error;
+    }
+  }
+}
+
+/**
+ * Build a Baileys-compatible { state, saveCreds } pair for one session,
+ * fully backed by Supabase. Nothing here touches the local filesystem.
+ */
+export async function useSupabaseAuthState(sessionId) {
+  const creds = await loadCreds(sessionId);
+
+  const state = {
+    creds,
+    keys: {
+      get: async (type, ids) => getKeys(sessionId, type, ids),
+      set: async (data) => setKeys(sessionId, data)
+    }
+  };
+
+  const saveCredsFn = async () => saveCreds(sessionId, state.creds);
+
+  return { state, saveCreds: saveCredsFn };
+}
+
+/** Remove all persisted auth material for a session (credentials + keys). */
+export async function deleteAuthState(sessionId) {
+  const { error: keysErr } = await supabase.from('auth_keys').delete().eq('session_id', sessionId);
+  if (keysErr) log.error({ err: keysErr.message, sessionId }, 'Failed to delete auth_keys');
+
+  const { error: credsErr } = await supabase
+    .from('auth_credentials')
+    .delete()
+    .eq('session_id', sessionId);
+  if (credsErr) log.error({ err: credsErr.message, sessionId }, 'Failed to delete auth_credentials');
+}
