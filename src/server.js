@@ -1,210 +1,64 @@
-import 'dotenv/config';
-
 import express from 'express';
-import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import path from 'path';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { env } from './config/env.js';
+import { logger, child } from './utils/logger.js';
+import { ErrorCodes } from './utils/errors.js';
+import healthRouter from './routes/health.js';
+import sessionsRouter from './routes/sessions.js';
+import { shutdownAll } from './services/session-manager.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const log = child({ module: 'server' });
 
-import config from './config/env.js';
-import logger from './utils/logger.js';
-import BaileysService from './services/baileys.js';
-import healthRoutes from './routes/health.js';
-import SessionRoutes from './routes/sessions.js';
+const app = express();
 
-/**
- * Main Express server for Tanu Xai Session Generator
- */
-class Server {
-    constructor() {
-        this.app = express();
-        this.baileysService = new BaileysService();
-        this.server = null;
-        
-        this.setupMiddleware();
-        this.setupRoutes();
-        this.setupGracefulShutdown();
-    }
+// Railway sits behind a reverse proxy; trust exactly one hop so
+// express-rate-limit and req.ip read the real client IP from X-Forwarded-For
+// without blindly trusting arbitrary spoofed proxy chains.
+app.set('trust proxy', 1);
 
-    /**
-     * Setup Express middleware
-     */
-    setupMiddleware() {
-        // Trust Railway's reverse proxy with explicit loopback + unique configuration
-        // This prevents ERR_ERL_PERMISSIVE_TRUST_PROXY while maintaining correct IP detection
-        this.app.set('trust proxy', ['loopback', 'uniquelocal']);
+app.use(helmet());
+app.use(cors({ origin: env.corsOrigin }));
+app.use(express.json({ limit: '32kb' }));
 
-        // Security headers
-        this.app.use(helmet({
-            contentSecurityPolicy: false, // Allow inline styles/scripts for simple frontend
-            crossOriginEmbedderPolicy: false
-        }));
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: ErrorCodes.RATE_LIMITED, message: 'Too many requests.' } }
+});
+app.use('/api', generalLimiter);
 
-        // CORS configuration
-        this.app.use(cors({
-            origin: process.env.CORS_ORIGIN || '*',
-            methods: ['GET', 'POST'],
-            allowedHeaders: ['Content-Type', 'Authorization'],
-            credentials: false
-        }));
+app.use('/api', healthRouter);
+app.use('/api', sessionsRouter);
 
-        // Rate limiting - configured AFTER trust proxy
-        const limiter = rateLimit({
-            windowMs: 15 * 60 * 1000, // 15 minutes
-            max: 100, // Limit each IP to 100 requests per windowMs
-            message: {
-                error: 'Too many requests, please try again later'
-            },
-            standardHeaders: true,
-            legacyHeaders: false,
-            validate: { xForwardedForHeader: true } // Explicit validation for Railway proxy
-        });
-        this.app.use(limiter);
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
-        // Stricter rate limit for session creation
-        const sessionLimiter = rateLimit({
-            windowMs: 60 * 60 * 1000, // 1 hour
-            max: 10, // Limit each IP to 10 session creations per hour
-            message: {
-                error: 'Too many session creation attempts, please try again later'
-            },
-            standardHeaders: true,
-            legacyHeaders: false,
-            keyGenerator: ipKeyGenerator(), // Properly handle IPv6 addresses
-            validate: { xForwardedForHeader: false } // Disable X-Forwarded-For validation since we use specific trust proxy
-        });
+// Final safety net: never leak stack traces to the client.
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  log.error({ err: err.message }, 'Unhandled error');
+  res.status(500).json({
+    success: false,
+    error: { code: ErrorCodes.INTERNAL_ERROR, message: 'Something went wrong.' }
+  });
+});
 
-        // Body parsing
-        this.app.use(express.json({ limit: '1mb' }));
-        this.app.use(express.urlencoded({ extended: true }));
+const server = app.listen(env.port, '0.0.0.0', () => {
+  log.info({ port: env.port, env: env.nodeEnv }, 'Tanu-XAI session generator listening');
+});
 
-        // Static files
-        this.app.use(express.static(join(__dirname, '../public')));
-
-        // Apply session limiter to session start endpoint only
-        this.app.use('/api/session/start', sessionLimiter);
-    }
-
-    /**
-     * Setup API routes
-     */
-    setupRoutes() {
-        // Health check
-        this.app.use('/api/health', healthRoutes);
-
-        // Session routes
-        const sessionRoutes = new SessionRoutes(this.baileysService);
-        this.app.use('/api/session', sessionRoutes.getRouter());
-
-        // Serve index.html for root
-        this.app.get('/', (req, res) => {
-            res.sendFile(join(__dirname, '../public/index.html'));
-        });
-
-        // 404 handler
-        this.app.use((req, res) => {
-            res.status(404).json({
-                error: 'Not found'
-            });
-        });
-
-        // Error handler
-        this.app.use((err, req, res, next) => {
-            logger.error('Unhandled error', { error: err.message, stack: err.stack });
-            
-            if (config.nodeEnv === 'development') {
-                res.status(500).json({
-                    error: err.message,
-                    stack: err.stack
-                });
-            } else {
-                res.status(500).json({
-                    error: 'Internal server error'
-                });
-            }
-        });
-    }
-
-    /**
-     * Setup graceful shutdown handlers
-     */
-    setupGracefulShutdown() {
-        const gracefulShutdown = async (signal) => {
-            logger.info(`Received ${signal}, shutting down gracefully...`);
-
-            // Stop accepting new connections
-            if (this.server) {
-                this.server.close(async () => {
-                    logger.info('HTTP server closed');
-
-                    // Cleanup all active sessions
-                    logger.info('Cleaning up active sessions...');
-                    for (const sessionId of this.baileysService.sessions.keys()) {
-                        try {
-                            await this.baileysService.stopSession(sessionId);
-                        } catch (error) {
-                            logger.warn('Error stopping session during shutdown', { sessionId, error: error.message });
-                        }
-                    }
-
-                    // Exit process
-                    process.exit(0);
-                });
-
-                // Force close after timeout
-                setTimeout(() => {
-                    logger.error('Forced shutdown after timeout');
-                    process.exit(1);
-                }, 30000);
-            } else {
-                process.exit(0);
-            }
-        };
-
-        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-    }
-
-    /**
-     * Start the server
-     */
-    start() {
-        const port = config.port;
-
-        this.server = this.app.listen(port, () => {
-            logger.info('Tanu Xai Session Generator started', { 
-                port, 
-                env: config.nodeEnv 
-            });
-            logger.info('Server ready', { 
-                url: `http://localhost:${port}` 
-            });
-        });
-
-        // Periodic cleanup of expired sessions
-        setInterval(() => {
-            this.baileysService.cleanupExpiredSessions().catch(err => {
-                logger.error('Cleanup error', { error: err.message });
-            });
-        }, 60 * 60 * 1000); // Every hour
-
-        return this.server;
-    }
-
-    /**
-     * Get the Express app instance
-     */
-    getApp() {
-        return this.app;
-    }
+async function gracefulShutdown(signal) {
+  log.info({ signal }, 'Shutting down');
+  await shutdownAll();
+  server.close(() => process.exit(0));
+  // Force-exit if something is still hanging after 10s.
+  setTimeout(() => process.exit(1), 10_000).unref();
 }
 
-export default Server;
-
-// Start the server when run directly
-const server = new Server();
-server.start();
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
