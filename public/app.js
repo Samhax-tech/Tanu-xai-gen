@@ -1,304 +1,143 @@
-/**
- * Frontend JavaScript for Tanu Xai Session Generator
- * Handles user interaction and API communication
- */
+const $ = (id) => document.getElementById(id);
 
+const views = {
+  start: $('view-start'),
+  pairing: $('view-pairing'),
+  connected: $('view-connected'),
+  error: $('view-error')
+};
+
+function showView(name) {
+  for (const key of Object.keys(views)) {
+    views[key].hidden = key !== name;
+  }
+}
+
+const STATUS_LABELS = {
+  created: 'Initializing…',
+  connecting: 'Connecting to WhatsApp…',
+  requesting_pairing_code: 'Generating pairing code…',
+  waiting_for_auth: 'Waiting for authentication',
+  authenticating: 'Authenticating…',
+  connected: 'Connected!',
+  reconnecting: 'Reconnecting…'
+};
+
+const ERROR_LABELS = {
+  INVALID_PHONE_NUMBER: 'Invalid phone number',
+  SESSION_ALREADY_ACTIVE: 'That number is already being paired',
+  PAIRING_FAILED: 'Pairing code generation failed',
+  PAIRING_TIMEOUT: 'Pairing expired',
+  RATE_LIMITED: 'Too many attempts. Please wait a bit.',
+  INTERNAL_ERROR: 'Server unavailable'
+};
+
+let pollHandle = null;
 let currentSessionId = null;
-let statusCheckInterval = null;
-let currentPairingCode = null;
 
-// DOM Elements
-const phoneForm = document.getElementById('phone-form');
-const phoneInput = document.getElementById('phone-input');
-const generateBtn = document.getElementById('generate-btn');
-const phoneError = document.getElementById('phone-error');
+function stopPolling() {
+  if (pollHandle) {
+    clearInterval(pollHandle);
+    pollHandle = null;
+  }
+}
 
-const stepPhone = document.getElementById('step-phone');
-const stepCode = document.getElementById('step-code');
-const stepConnected = document.getElementById('step-connected');
-const stepError = document.getElementById('step-error');
+async function pollStatus(sessionId) {
+  try {
+    const res = await fetch(`/api/session/${sessionId}/status`);
+    const data = await res.json();
 
-const pairingCodeEl = document.getElementById('pairing-code');
-const statusText = document.getElementById('status-text');
-const authSpinner = document.getElementById('auth-spinner');
-const connectedInfo = document.getElementById('connected-info');
-const errorMessage = document.getElementById('error-message');
-const copyBtn = document.getElementById('copy-btn');
+    if (!res.ok) {
+      throw new Error(data?.error?.code || 'INTERNAL_ERROR');
+    }
 
-/**
- * Show a specific step
- */
-function showStep(stepElement) {
-    document.querySelectorAll('.step').forEach(step => {
-        step.classList.remove('active');
+    $('status-text').textContent = STATUS_LABELS[data.status] || data.status;
+
+    if (data.status === 'connected') {
+      stopPolling();
+      $('session-id').textContent = sessionId;
+      showView('connected');
+      return;
+    }
+
+    if (['logged_out', 'expired', 'failed'].includes(data.status)) {
+      stopPolling();
+      renderError(data.status === 'expired' ? 'PAIRING_TIMEOUT' : 'PAIRING_FAILED');
+    }
+  } catch (err) {
+    stopPolling();
+    renderError('INTERNAL_ERROR');
+  }
+}
+
+function renderError(code) {
+  $('error-text').textContent = ERROR_LABELS[code] || 'Something went wrong';
+  showView('error');
+}
+
+$('start-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('start-btn');
+  const errEl = $('start-error');
+  errEl.hidden = true;
+
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+
+  try {
+    const res = await fetch('/api/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phoneNumber: $('phone').value })
     });
-    stepElement.classList.add('active');
-}
+    const data = await res.json();
 
-/**
- * Format pairing code as XXXX-XXXX
- */
-function formatPairingCode(code) {
-    if (!code || code.length !== 8) {
-        return code;
-    }
-    return `${code.slice(0, 4)}-${code.slice(4)}`;
-}
-
-/**
- * Copy pairing code to clipboard
- */
-async function copyToClipboard(text) {
-    try {
-        await navigator.clipboard.writeText(text);
-        if (copyBtn) {
-            const originalText = copyBtn.textContent;
-            copyBtn.textContent = '✓ Copied!';
-            copyBtn.disabled = true;
-            setTimeout(() => {
-                copyBtn.textContent = originalText;
-                copyBtn.disabled = false;
-            }, 2000);
-        }
-        return true;
-    } catch (err) {
-        console.error('Failed to copy:', err);
-        return false;
-    }
-}
-
-/**
- * Start session with phone number
- */
-async function startSession(phoneNumber) {
-    try {
-        generateBtn.disabled = true;
-        generateBtn.textContent = 'Creating session...';
-        phoneError.textContent = '';
-
-        const response = await fetch('/api/session/start', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ phoneNumber })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || 'Failed to start session');
-        }
-
-        currentSessionId = data.sessionId;
-        
-        // Request pairing code
-        await requestPairingCode();
-
-    } catch (error) {
-        console.error('Start session error:', error);
-        phoneError.textContent = error.message;
-        generateBtn.disabled = false;
-        generateBtn.textContent = 'Generate Pairing Code';
-    }
-}
-
-/**
- * Request pairing code from server
- */
-async function requestPairingCode() {
-    try {
-        generateBtn.textContent = 'Generating code...';
-        
-        const response = await fetch(`/api/session/${currentSessionId}/pairing-code`, {
-            method: 'POST'
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || data.message || 'Failed to get pairing code');
-        }
-
-        // Store and display formatted pairing code
-        currentPairingCode = data.pairingCode;
-        pairingCodeEl.textContent = formatPairingCode(data.pairingCode);
-
-        // Setup copy button
-        if (copyBtn) {
-            copyBtn.addEventListener('click', () => {
-                copyToClipboard(currentPairingCode);
-            });
-        }
-
-        // Move to code step
-        showStep(stepCode);
-
-        // Start polling for status
-        startStatusPolling();
-
-    } catch (error) {
-        console.error('Request pairing code error:', error);
-        showError(error.message);
-    } finally {
-        generateBtn.disabled = false;
-        generateBtn.textContent = 'Generate Pairing Code';
-    }
-}
-
-/**
- * Poll session status
- */
-async function checkStatus() {
-    try {
-        const response = await fetch(`/api/session/${currentSessionId}/status`);
-        
-        if (!response.ok) {
-            if (response.status === 404) {
-                throw new Error('Session not found');
-            }
-            throw new Error('Failed to get status');
-        }
-
-        const status = await response.json();
-
-        updateStatusUI(status);
-
-        // Only show connected state when status is actually 'connected'
-        // This means user has entered the pairing code in WhatsApp
-        if (status.status === 'connected') {
-            stopStatusPolling();
-            showConnected(status);
-        } else if (status.status === 'failed' || status.status === 'logged_out') {
-            stopStatusPolling();
-            showError('Authentication failed or logged out. Please try again.');
-        }
-
-    } catch (error) {
-        console.error('Status check error:', error);
-        stopStatusPolling();
-        showError(error.message);
-    }
-}
-
-/**
- * Update status text based on session status
- */
-function updateStatusUI(status) {
-    const statusMessages = {
-        'created': 'Initializing session...',
-        'initializing': 'Initializing session...',
-        'connecting': 'Connecting to WhatsApp...',
-        'requesting_pairing_code': 'Requesting pairing code...',
-        'waiting_for_pairing': 'Ready for pairing',
-        'waiting_for_auth': 'Waiting for authentication...',
-        'authenticating': 'Authenticating...',
-        'reconnecting': 'Reconnecting...',
-        'connected': 'Connected!'
-    };
-
-    statusText.textContent = statusMessages[status.status] || 'Processing...';
-}
-
-/**
- * Show connected state
- */
-function showConnected(status) {
-    authSpinner.style.display = 'none';
-    
-    const phoneDisplay = status.phone ? `WhatsApp: ${status.phone}` : 'WhatsApp authenticated';
-    connectedInfo.textContent = phoneDisplay;
-    
-    showStep(stepConnected);
-}
-
-/**
- * Show error state
- */
-function showError(message) {
-    errorMessage.textContent = message;
-    showStep(stepError);
-}
-
-/**
- * Start status polling
- */
-function startStatusPolling() {
-    // Check immediately
-    checkStatus();
-    
-    // Then poll every 3 seconds
-    statusCheckInterval = setInterval(checkStatus, 3000);
-}
-
-/**
- * Stop status polling
- */
-function stopStatusPolling() {
-    if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
-        statusCheckInterval = null;
-    }
-}
-
-/**
- * Validate phone number format on frontend
- */
-function validatePhoneInput(phoneNumber) {
-    const trimmed = phoneNumber.trim();
-    
-    if (!trimmed) {
-        return 'Phone number is required';
+    if (!res.ok || !data.success) {
+      throw new Error(data?.error?.code || 'INTERNAL_ERROR');
     }
 
-    // Remove non-digits except leading +
-    const digitsOnly = trimmed.replace(/^\+/, '').replace(/\D/g, '');
-    
-    if (digitsOnly.length < 8) {
-        return 'Phone number is too short. Include country code.';
-    }
-    
-    if (digitsOnly.length > 15) {
-        return 'Phone number is too long';
-    }
+    currentSessionId = data.sessionId;
+    $('pairing-code').textContent = data.pairingCode;
+    $('status-text').textContent = STATUS_LABELS[data.status] || data.status;
+    showView('pairing');
 
-    if (digitsOnly.startsWith('0')) {
-        return 'Phone number must include country code (do not start with 0)';
-    }
-
-    return null;
-}
-
-// Event Listeners
-phoneForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const phoneNumber = phoneInput.value.trim();
-    const validationError = validatePhoneInput(phoneNumber);
-    
-    if (validationError) {
-        phoneError.textContent = validationError;
-        return;
-    }
-
-    await startSession(phoneNumber);
+    stopPolling();
+    pollHandle = setInterval(() => pollStatus(currentSessionId), 1500);
+  } catch (err) {
+    errEl.textContent = ERROR_LABELS[err.message] || 'Unable to create session';
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate pairing code';
+  }
 });
 
-// Input formatting - allow only digits and leading +
-phoneInput.addEventListener('input', (e) => {
-    let value = e.target.value;
-    
-    // Allow only digits and one leading +
-    if (value.startsWith('+')) {
-        value = '+' + value.slice(1).replace(/[^\d]/g, '');
-    } else {
-        value = value.replace(/[^\d+]/g, '');
-    }
-    
-    e.target.value = value;
+function wireCopyButton(buttonId, sourceId) {
+  $(buttonId).addEventListener('click', async () => {
+    await navigator.clipboard.writeText($(sourceId).textContent.trim());
+    const original = $(buttonId).textContent;
+    $(buttonId).textContent = 'Copied!';
+    setTimeout(() => { $(buttonId).textContent = original; }, 1500);
+  });
+}
+
+wireCopyButton('copy-code', 'pairing-code');
+wireCopyButton('copy-session', 'session-id');
+
+$('retry-btn').addEventListener('click', () => {
+  stopPolling();
+  showView('start');
 });
 
-// Cleanup on page unload
-window.addEventListener('beforeunload', () => {
-    stopStatusPolling();
-});
+// Recover an in-progress pairing session across a page refresh via the
+// session id in the URL (?session=TX_xxxxxxxx), matching Test 9.
+(function recoverFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('session');
+  if (!sessionId) return;
+
+  currentSessionId = sessionId;
+  showView('pairing');
+  pollHandle = setInterval(() => pollStatus(sessionId), 1500);
+  pollStatus(sessionId);
+})();
