@@ -1,176 +1,119 @@
-import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
-import { supabase } from './supabase.js';
+import makeWASocket, { Browsers, DisconnectReason } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
 import { child } from '../utils/logger.js';
+import { maskPhoneNumber } from '../utils/phone.js';
 
-const log = child({ module: 'auth-store' });
-
-// Baileys' BufferJSON replacer/reviver correctly round-trips Buffers, typed
-// arrays and the library's internal key shapes. We reuse it instead of a
-// custom (fragile) serializer, but store the *parsed* JS object as jsonb
-// rather than a JSON string, since Postgres already gives us jsonb.
-function serialize(value) {
-  // JSON.stringify -> JSON.parse via BufferJSON.replacer gives us a plain
-  // object tree with Buffers turned into { type: 'Buffer', data: [...] }
-  // wrappers, which is what jsonb wants to store.
-  return JSON.parse(JSON.stringify(value, BufferJSON.replacer));
-}
-
-function deserialize(value) {
-  if (value === null || value === undefined) return value;
-  return JSON.parse(JSON.stringify(value), BufferJSON.reviver);
-}
+const log = child({ module: 'baileys' });
 
 /**
- * Load (or initialize) the persistent credentials row for a session.
+ * Create a brand-new Baileys socket for one session and wire exactly one
+ * connection.update handler. Callers pass a `runtime` object (from
+ * session-manager) that owns the current `generation` counter; every event
+ * checks it belongs to the still-current generation before acting, so a
+ * stale/replaced socket can never mutate the session that superseded it.
+ *
+ * `handlers` is a small set of callbacks the session-manager supplies:
+ *   onPairingCode(code)
+ *   onConnecting()
+ *   onConnected({ jid, name })
+ *   onReconnecting()
+ *   onLoggedOut()
+ *   onExpiredOrFailed(reason)
+ *   onCredsUpdate()  -- must call state.saveCreds internally, we just notify
  */
-async function loadCreds(sessionId) {
-  const { data, error } = await supabase
-    .from('auth_credentials')
-    .select('creds')
-    .eq('session_id', sessionId)
-    .maybeSingle();
+export function createSocket({ runtime, authState, generation, handlers }) {
+  const sock = makeWASocket({
+    auth: authState.state,
+    // Canonical, known-supported browser identity. Cosmetic branding is a
+    // separate concern from pairing reliability and is deliberately not
+    // touched here.
+    browser: Browsers.ubuntu('Chrome'),
+    printQRInTerminal: false,
+    syncFullHistory: false,
+    markOnlineOnConnect: false
+  });
 
-  if (error) {
-    log.error({ err: error.message, sessionId }, 'Failed to load auth_credentials');
-    throw error;
-  }
+  const isCurrentGeneration = () => runtime.generation === generation;
 
-  if (data?.creds) {
-    return deserialize(data.creds);
-  }
-
-  const fresh = initAuthCreds();
-  await saveCreds(sessionId, fresh);
-  return fresh;
-}
-
-async function saveCreds(sessionId, creds) {
-  const { error } = await supabase
-    .from('auth_credentials')
-    .upsert(
-      {
-        session_id: sessionId,
-        creds: serialize(creds),
-        updated_at: new Date().toISOString()
-      },
-      { onConflict: 'session_id' }
-    );
-
-  if (error) {
-    log.error({ err: error.message, sessionId }, 'Failed to save auth_credentials');
-    throw error;
-  }
-}
-
-/**
- * Fetch a set of key ids for a given key type for one session.
- * Returns a map of id -> parsed key data (only for ids that exist).
- */
-async function getKeys(sessionId, type, ids) {
-  if (!ids.length) return {};
-
-  const { data, error } = await supabase
-    .from('auth_keys')
-    .select('key_id, key_data')
-    .eq('session_id', sessionId)
-    .eq('key_type', type)
-    .in('key_id', ids);
-
-  if (error) {
-    log.error({ err: error.message, sessionId, type }, 'Failed to load auth_keys');
-    throw error;
-  }
-
-  const result = {};
-  for (const row of data || []) {
-    let value = deserialize(row.key_data);
-    if (type === 'app-state-sync-key' && value) {
-      // Baileys expects this shape to come back as the protobuf-decoded type;
-      // it round-trips fine through BufferJSON as long as it was serialized
-      // the same way going in.
+  sock.ev.on('creds.update', async () => {
+    if (!isCurrentGeneration()) return;
+    try {
+      await authState.saveCreds();
+    } catch (err) {
+      log.error({ err: err.message, sessionId: runtime.sessionId }, 'Failed to persist creds.update');
     }
-    result[row.key_id] = value;
-  }
-  return result;
-}
+  });
 
-/**
- * Apply a Baileys keys.set(...) batch: { [type]: { [id]: data | null } }.
- * A null value means "delete this key".
- */
-async function setKeys(sessionId, data) {
-  const upserts = [];
-  const deletions = [];
+  // Exactly one connection.update handler for this socket generation.
+  sock.ev.on('connection.update', async (update) => {
+    if (!isCurrentGeneration()) return;
 
-  for (const type of Object.keys(data)) {
-    for (const id of Object.keys(data[type])) {
-      const value = data[type][id];
-      if (value === null || value === undefined) {
-        deletions.push({ type, id });
-      } else {
-        upserts.push({
-          session_id: sessionId,
-          key_type: type,
-          key_id: id,
-          key_data: serialize(value),
-          updated_at: new Date().toISOString()
-        });
+    const { connection, lastDisconnect, isNewLogin } = update;
+
+    try {
+      if (connection === 'connecting') {
+        await handlers.onConnecting?.();
+        return;
       }
-    }
-  }
 
-  if (upserts.length) {
-    const { error } = await supabase
-      .from('auth_keys')
-      .upsert(upserts, { onConflict: 'session_id,key_type,key_id' });
-    if (error) {
-      log.error({ err: error.message, sessionId }, 'Failed to upsert auth_keys');
-      throw error;
-    }
-  }
+      if (connection === 'open') {
+        // This is the ONLY point at which we trust that WhatsApp has
+        // genuinely authenticated the socket. creds.me being populated
+        // earlier (e.g. during pairing-code request) is NOT sufficient.
+        const jid = sock.user?.id ?? null;
+        const name = sock.user?.name ?? sock.user?.verifiedName ?? null;
+        await handlers.onConnected?.({ jid, name, isNewLogin: Boolean(isNewLogin) });
+        return;
+      }
 
-  for (const { type, id } of deletions) {
-    const { error } = await supabase
-      .from('auth_keys')
-      .delete()
-      .eq('session_id', sessionId)
-      .eq('key_type', type)
-      .eq('key_id', id);
-    if (error) {
-      log.error({ err: error.message, sessionId, type, id }, 'Failed to delete auth_key');
-      throw error;
+      if (connection === 'close') {
+        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          await handlers.onLoggedOut?.();
+          return;
+        }
+
+        // Any other close while the session was already authenticated is a
+        // recoverable disconnect; let the session-manager decide whether to
+        // reconnect. If the session never finished pairing, the pairing
+        // timeout (owned by session-manager) governs cleanup instead of an
+        // endless reconnect loop here.
+        await handlers.onReconnecting?.(statusCode);
+      }
+    } catch (err) {
+      log.error(
+        { err: err.message, sessionId: runtime.sessionId },
+        'Error handling connection.update'
+      );
+      await handlers.onExpiredOrFailed?.('handler_error');
     }
-  }
+  });
+
+  return sock;
 }
 
 /**
- * Build a Baileys-compatible { state, saveCreds } pair for one session,
- * fully backed by Supabase. Nothing here touches the local filesystem.
+ * Request a pairing code for a freshly-created socket. Resolution of this
+ * call means "WhatsApp generated a code", nothing more — it is explicitly
+ * NOT proof of authentication.
  */
-export async function useSupabaseAuthState(sessionId) {
-  const creds = await loadCreds(sessionId);
-
-  const state = {
-    creds,
-    keys: {
-      get: async (type, ids) => getKeys(sessionId, type, ids),
-      set: async (data) => setKeys(sessionId, data)
-    }
-  };
-
-  const saveCredsFn = async () => saveCreds(sessionId, state.creds);
-
-  return { state, saveCreds: saveCredsFn };
+export async function requestPairingCode(sock, normalizedPhoneNumber) {
+  log.info({ phone: maskPhoneNumber(normalizedPhoneNumber) }, 'Requesting pairing code');
+  const code = await sock.requestPairingCode(normalizedPhoneNumber);
+  return code;
 }
 
-/** Remove all persisted auth material for a session (credentials + keys). */
-export async function deleteAuthState(sessionId) {
-  const { error: keysErr } = await supabase.from('auth_keys').delete().eq('session_id', sessionId);
-  if (keysErr) log.error({ err: keysErr.message, sessionId }, 'Failed to delete auth_keys');
-
-  const { error: credsErr } = await supabase
-    .from('auth_credentials')
-    .delete()
-    .eq('session_id', sessionId);
-  if (credsErr) log.error({ err: credsErr.message, sessionId }, 'Failed to delete auth_credentials');
+export function terminateSocket(sock) {
+  if (!sock) return;
+  try {
+    sock.ev.removeAllListeners();
+  } catch {
+    // no-op
+  }
+  try {
+    sock.end(undefined);
+  } catch {
+    // no-op
+  }
 }
