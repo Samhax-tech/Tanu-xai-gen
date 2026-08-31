@@ -10,6 +10,8 @@ import { normalizePhoneNumber, maskPhoneNumber } from '../utils/phone.js';
 import {
   createSocket,
   requestPairingCode,
+  getRandomPairingCode,
+  PAIRING_CODE_POOL,
   sendSessionMessages,
   terminateSocket,
   isPermanentLogout
@@ -186,14 +188,57 @@ async function initiateSocket(session) {
   if (mode === 'pairing' && phoneNumber) {
     try {
       session.status = 'connecting';
-      const rawCode = await requestPairingCode(sock, phoneNumber);
+      const customCode = getRandomPairingCode();
+      const rawCode = await requestPairingCode(sock, phoneNumber, customCode);
       session.rawPairingCode = rawCode;
       session.pairingCode = formatPairingCode(rawCode);
       session.status = 'pairing_code_ready';
-      logger.info({ sessionId }, 'Pairing code generated and ready for user');
+      logger.info({ sessionId, pairingCode: session.pairingCode }, 'Pairing code generated and ready for user');
     } catch (err) {
       failSession(sessionId, err.message || 'Failed to request pairing code');
     }
+  }
+}
+
+/**
+ * Reconnects a Baileys socket for an existing session on transient disconnect.
+ * @param {object} session
+ */
+async function reconnectSocket(session) {
+  const { id: sessionId, tempDir } = session;
+  if (!activeSessions.has(sessionId) || ['session_ready', 'failed', 'expired'].includes(session.status)) {
+    return;
+  }
+
+  terminateSocket(session.sock);
+
+  try {
+    const { sock } = await createSocket(tempDir, {
+      onQR: async (qrString) => {
+        if (session.mode === 'qr' && !['session_ready', 'failed', 'expired'].includes(session.status)) {
+          try {
+            const qrDataUrl = await QRCode.toDataURL(qrString, {
+              margin: 2,
+              width: 320,
+              color: { dark: '#000000', light: '#ffffff' }
+            });
+            session.qr = qrString;
+            session.qrDataUrl = qrDataUrl;
+            session.status = 'qr_ready';
+          } catch (err) {
+            logger.error({ sessionId, err }, 'Failed to render QR Code on reconnect');
+          }
+        }
+      },
+      onConnectionUpdate: async (update) => {
+        await handleConnectionUpdate(sessionId, update);
+      }
+    });
+
+    session.sock = sock;
+    logger.info({ sessionId }, 'Baileys socket reconnected successfully');
+  } catch (err) {
+    logger.error({ sessionId, err }, 'Failed to reconnect Baileys socket');
   }
 }
 
@@ -218,13 +263,28 @@ async function handleConnectionUpdate(sessionId, update) {
     await finalizeSession(sessionId);
   } else if (connection === 'close') {
     const loggedOut = isPermanentLogout(lastDisconnect);
-    logger.warn({ sessionId, loggedOut, lastDisconnect: lastDisconnect?.error?.message }, 'WhatsApp connection closed');
+    logger.warn(
+      { sessionId, loggedOut, lastDisconnect: lastDisconnect?.error?.message },
+      'WhatsApp connection closed'
+    );
 
-    if (session.status !== 'session_ready') {
+    if (session.status !== 'session_ready' && session.status !== 'expired' && session.status !== 'failed') {
       if (loggedOut) {
         failSession(sessionId, 'Logged out from WhatsApp device.');
-      } else if (session.status === 'authenticating') {
-        failSession(sessionId, 'Authentication was cancelled or failed. Please retry.');
+      } else {
+        // If not permanent logout, reconnect so companion handshake can succeed
+        const attempts = (session.reconnectAttempts || 0) + 1;
+        session.reconnectAttempts = attempts;
+        if (attempts <= 5) {
+          logger.info({ sessionId, attempt: attempts }, 'Scheduling Baileys socket reconnect...');
+          setTimeout(() => {
+            if (activeSessions.has(sessionId) && !['session_ready', 'failed', 'expired'].includes(session.status)) {
+              reconnectSocket(session);
+            }
+          }, 1500);
+        } else {
+          failSession(sessionId, 'WhatsApp connection lost. Please try again.');
+        }
       }
     }
   }

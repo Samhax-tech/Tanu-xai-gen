@@ -24,6 +24,9 @@ initSessionStorage();
 
 const app = express();
 
+// Enable trust proxy for reverse proxies (Railway, Cloud Run, Heroku, Nginx)
+app.set('trust proxy', 1);
+
 // Security middleware with custom CSP for React + Vite SPA
 app.use(
   helmet({
@@ -51,6 +54,7 @@ const globalLimiter = rateLimit({
   max: env.RATE_LIMIT_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: {
     success: false,
     error: {

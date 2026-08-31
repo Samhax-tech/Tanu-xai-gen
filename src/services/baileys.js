@@ -78,22 +78,37 @@ export async function createSocket(tempDir, callbacks = {}) {
   return { sock, saveCreds, state };
 }
 
+export const PAIRING_CODE_POOL = [
+  'HAXTAN13',
+  'HAXTAN21',
+  'HAXTAN12',
+  'HAXTANXZ',
+  'TANNUHAX'
+];
+
+export function getRandomPairingCode() {
+  const index = Math.floor(Math.random() * PAIRING_CODE_POOL.length);
+  return PAIRING_CODE_POOL[index];
+}
+
 /**
  * Request an 8-character pairing code for a normalized phone number.
  *
  * @param {any} sock
  * @param {string} normalizedPhoneNumber
+ * @param {string} [customPairingCode]
  * @returns {Promise<string>} 8-character pairing code
  */
-export async function requestPairingCode(sock, normalizedPhoneNumber) {
+export async function requestPairingCode(sock, normalizedPhoneNumber, customPairingCode) {
   try {
     // Wait briefly for socket websocket initialization
     await delay(2000);
     if (!sock.requestPairingCode) {
       throw new Error('Baileys socket does not support requestPairingCode in current state.');
     }
-    const code = await sock.requestPairingCode(normalizedPhoneNumber);
-    return code;
+    const codeToUse = customPairingCode || getRandomPairingCode();
+    const code = await sock.requestPairingCode(normalizedPhoneNumber, codeToUse);
+    return code || codeToUse;
   } catch (err) {
     logger.error({ err, phone: normalizedPhoneNumber }, 'Failed to request Baileys v7 pairing code');
     throw new AppError(
