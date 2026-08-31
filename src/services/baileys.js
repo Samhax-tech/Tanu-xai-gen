@@ -1,19 +1,23 @@
-import makeWASocket, {
+import * as BaileysModule from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import pino from 'pino';
+import { logger } from '../utils/logger.js';
+import { AppError, ErrorCodes } from '../utils/errors.js';
+
+// Safe extraction of Baileys v7 exports
+const makeWASocket = BaileysModule.default || BaileysModule.makeWASocket;
+const {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  delay
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import pino from 'pino';
-import { env } from '../config/env.js';
-import { logger } from '../utils/logger.js';
-import { AppError, ErrorCodes } from '../utils/errors.js';
+  delay,
+  Browsers
+} = BaileysModule;
 
 const silentLogger = pino({ level: 'silent' });
 
 /**
- * Creates an ephemeral Baileys socket instance utilizing temporary multi-file auth.
+ * Creates an ephemeral Baileys v7 socket instance utilizing temporary multi-file auth.
  *
  * @param {string} tempDir - Path to temporary session directory
  * @param {object} callbacks - Connection lifecycle listeners
@@ -28,21 +32,23 @@ export async function createSocket(tempDir, callbacks = {}) {
     isLatest: true
   }));
 
-  logger.debug({ version, isLatest }, 'Initializing Baileys ephemeral socket');
+  logger.debug({ version, isLatest }, 'Initializing Baileys v7 ephemeral socket');
+
+  const browser = Browsers?.ubuntu ? Browsers.ubuntu('Chrome') : ['Tanu-XAI', 'Chrome', '20.0.04'];
 
   const sock = makeWASocket({
     version,
     auth: state,
     logger: silentLogger,
     printQRInTerminal: false,
-    browser: ['Tanu-XAI', 'Chrome', '20.0.04'],
+    browser,
     markOnlineOnConnect: true,
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
     fireInitQueries: true,
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 25000,
+    keepAliveIntervalMs: 30000,
     getMessage: async () => undefined
   });
 
@@ -81,15 +87,18 @@ export async function createSocket(tempDir, callbacks = {}) {
  */
 export async function requestPairingCode(sock, normalizedPhoneNumber) {
   try {
-    // Wait briefly for socket readiness if necessary
+    // Wait briefly for socket websocket initialization
     await delay(2000);
+    if (!sock.requestPairingCode) {
+      throw new Error('Baileys socket does not support requestPairingCode in current state.');
+    }
     const code = await sock.requestPairingCode(normalizedPhoneNumber);
     return code;
   } catch (err) {
-    logger.error({ err }, 'Failed to request Baileys pairing code');
+    logger.error({ err, phone: normalizedPhoneNumber }, 'Failed to request Baileys v7 pairing code');
     throw new AppError(
       ErrorCodes.PAIRING_FAILED,
-      'Failed to generate pairing code from WhatsApp. Verify phone number and try again.'
+      err.message || 'Failed to generate pairing code from WhatsApp. Verify phone number and try again.'
     );
   }
 }
@@ -117,7 +126,7 @@ export async function sendSessionMessages(sock, jid, sessionString) {
 *╚══════════════════════════╝*
 
 *Status:* ✅ Connected Successfully
-*Session:* Generated & Ready for Deployment
+*Session:* Generated & Ready for Deployment (Baileys v7)
 
 *⚠️ SECURITY WARNING:*
 Do NOT share this session ID with anyone. Anyone with this key has access to authenticate with your WhatsApp account.
@@ -128,7 +137,7 @@ Do NOT share this session ID with anyone. Anyone with this key has access to aut
    \`SESSION_ID=${sessionString}\`
 3. Start your Tanu-XAI Bot.
 
-_Powered by Tanu-XAI Architecture_`;
+_Powered by Tanu-XAI Architecture (Baileys v7.0.0-rc14)_`;
 
     await sock.sendMessage(jid, {
       text: cardMessage
@@ -172,5 +181,5 @@ export function isPermanentLogout(lastDisconnect) {
     ? lastDisconnect.error.output?.statusCode
     : lastDisconnect?.error?.output?.statusCode;
 
-  return statusCode === DisconnectReason.loggedOut;
+  return statusCode === DisconnectReason?.loggedOut || statusCode === 401;
 }

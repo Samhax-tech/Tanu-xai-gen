@@ -246,7 +246,7 @@ export default function App() {
             Bot Integration Docs
           </button>
           <span>•</span>
-          <span className="text-slate-600 font-mono">Baileys v6.7.9</span>
+          <span className="text-slate-600 font-mono">Baileys v7.0.0-rc14</span>
         </div>
       </footer>
 

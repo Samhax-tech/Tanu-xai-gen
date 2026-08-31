@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Smartphone, ArrowRight, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
+import { Smartphone, ArrowRight, Loader2, ShieldCheck, Sparkles, CheckCircle2 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { CountrySelect } from './CountrySelect';
+import { COUNTRIES, Country } from '../data/countries';
 
 interface PhoneInputViewProps {
   onSubmit: (phone: string) => void;
@@ -8,44 +10,67 @@ interface PhoneInputViewProps {
   error?: string | null;
 }
 
-const COMMON_PREFIXES = [
-  { code: '92', label: '🇵🇰 +92 (PK)' },
-  { code: '1', label: '🇺🇸 +1 (US)' },
-  { code: '44', label: '🇬🇧 +44 (UK)' },
-  { code: '91', label: '🇮🇳 +91 (IN)' },
-  { code: '234', label: '🇳🇬 +234 (NG)' },
-  { code: '62', label: '🇮🇩 +62 (ID)' },
-  { code: '55', label: '🇧🇷 +55 (BR)' },
-  { code: '966', label: '🇸🇦 +966 (SA)' }
-];
-
 export const PhoneInputView: React.FC<PhoneInputViewProps> = ({ onSubmit, isLoading, error }) => {
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState<Country>(COUNTRIES[0]); // Default Pakistan (+92)
+  const [phoneDigits, setPhoneDigits] = useState<string>('');
   const [localError, setLocalError] = useState<string | null>(null);
+
+  const handleCountrySelect = (country: Country) => {
+    setSelectedCountry(country);
+    setLocalError(null);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setLocalError(null);
+
+    // If user pastes/types a number starting with +, check if it matches a country
+    if (val.startsWith('+')) {
+      const matched = COUNTRIES.find((c) => val.startsWith(c.dialCode));
+      if (matched) {
+        setSelectedCountry(matched);
+        setPhoneDigits(val.slice(matched.dialCode.length).trim());
+        return;
+      }
+    }
+
+    setPhoneDigits(val);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
 
-    const clean = phoneNumber.trim().replace(/[^\d+]/g, '');
-    if (!clean) {
+    const cleanInput = phoneDigits.trim();
+    if (!cleanInput) {
       setLocalError('Please enter your WhatsApp phone number.');
       return;
     }
 
-    const digitsOnly = clean.replace(/[^\d]/g, '');
-    if (digitsOnly.length < 10) {
-      setLocalError('Phone number must contain country code and at least 10 digits.');
+    // Strip non-digits
+    let digits = cleanInput.replace(/[^\d]/g, '');
+
+    // Handle leading zeros (e.g. 03001234567 for Pakistan or 0812345678 for other countries)
+    if (digits.startsWith('0')) {
+      digits = digits.replace(/^0+/, '');
+    }
+
+    const countryDialDigits = selectedCountry.dialCode.replace(/[^\d]/g, '');
+
+    // Check if the user already typed the country dial code inside the input box
+    let fullNumber: string;
+    if (digits.startsWith(countryDialDigits)) {
+      fullNumber = digits;
+    } else {
+      fullNumber = `${countryDialDigits}${digits}`;
+    }
+
+    if (fullNumber.length < 10 || fullNumber.length > 16) {
+      setLocalError('Please enter a valid phone number (10 to 15 digits).');
       return;
     }
 
-    onSubmit(phoneNumber);
-  };
-
-  const handlePrefixClick = (prefix: string) => {
-    if (!phoneNumber.startsWith(prefix)) {
-      setPhoneNumber(prefix);
-    }
+    onSubmit(fullNumber);
   };
 
   const displayError = error || localError;
@@ -64,53 +89,47 @@ export const PhoneInputView: React.FC<PhoneInputViewProps> = ({ onSubmit, isLoad
         </div>
         <h2 className="text-xl font-bold text-white tracking-tight">WhatsApp Pairing Code</h2>
         <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-          Enter your WhatsApp phone number with country code to generate your official 8-digit linking code.
+          Select your country and enter your WhatsApp phone number to generate an official 8-digit linking code.
         </p>
-      </div>
-
-      {/* Quick Prefix Selectors */}
-      <div className="mb-4">
-        <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-          Quick Country Code
-        </label>
-        <div className="flex flex-wrap gap-1.5">
-          {COMMON_PREFIXES.map((item) => (
-            <button
-              key={item.code}
-              type="button"
-              onClick={() => handlePrefixClick(item.code)}
-              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-800/70 hover:bg-slate-700/80 border border-slate-700/60 text-slate-300 transition cursor-pointer"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label htmlFor="phone-input" className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-            Phone Number
-          </label>
-          <div className="relative">
+          <div className="flex items-center justify-between mb-2">
+            <label htmlFor="phone-input" className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Country & Phone Number
+            </label>
+            <span className="text-[11px] text-cyan-400 font-medium flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" />
+              <span>{selectedCountry.name} ({selectedCountry.dialCode})</span>
+            </span>
+          </div>
+
+          {/* Unified Input Group with Country Select trigger button */}
+          <div className="relative flex items-center bg-slate-950/90 border border-slate-700/80 rounded-2xl overflow-visible focus-within:border-cyan-500 focus-within:ring-2 focus-within:ring-cyan-500/20 transition shadow-inner">
+            <CountrySelect
+              selectedCountry={selectedCountry}
+              onSelect={handleCountrySelect}
+              disabled={isLoading}
+            />
+
             <input
               id="phone-input"
               type="tel"
-              value={phoneNumber}
-              onChange={(e) => {
-                setPhoneNumber(e.target.value);
-                if (localError) setLocalError(null);
-              }}
-              placeholder="e.g. 923001234567 or 03001234567"
+              value={phoneDigits}
+              onChange={handleInputChange}
+              placeholder={selectedCountry.placeholder || '300 1234567'}
               disabled={isLoading}
-              className="w-full px-4 py-3.5 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white font-mono text-base tracking-wider placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 transition disabled:opacity-50"
-              autoComplete="tel"
+              className="w-full px-4 py-3.5 bg-transparent text-white font-mono text-base tracking-wider placeholder:text-slate-600 focus:outline-none transition disabled:opacity-50"
+              autoComplete="tel-national"
               autoFocus
             />
           </div>
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            Tip: Pakistani numbers starting with <code className="text-slate-400">03...</code> are automatically converted to <code className="text-slate-400">923...</code>
-          </p>
+
+          <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2 px-1">
+            <span>Example: {selectedCountry.dialCode} {selectedCountry.placeholder || '3001234567'}</span>
+            <span className="font-mono text-slate-400">Direct Baileys v7 Auth</span>
+          </div>
         </div>
 
         {displayError && (
@@ -125,13 +144,14 @@ export const PhoneInputView: React.FC<PhoneInputViewProps> = ({ onSubmit, isLoad
 
         <button
           type="submit"
+          id="generate-pairing-code-btn"
           disabled={isLoading}
-          className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-sm tracking-wide transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed glow-cyan"
+          className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-sm tracking-wide transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed glow-cyan mt-2"
         >
           {isLoading ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Connecting to WhatsApp...</span>
+              <span>Connecting to WhatsApp Handshake...</span>
             </>
           ) : (
             <>
@@ -146,7 +166,7 @@ export const PhoneInputView: React.FC<PhoneInputViewProps> = ({ onSubmit, isLoad
       {/* Security Reassurance */}
       <div className="mt-6 pt-5 border-t border-slate-800/80 flex items-center justify-center gap-2 text-slate-500 text-xs">
         <ShieldCheck className="w-4 h-4 text-emerald-400/80" />
-        <span>Zero database storage • Direct ephemeral Baileys handshake</span>
+        <span>Zero database storage • Direct ephemeral Baileys v7 handshake</span>
       </div>
     </motion.div>
   );

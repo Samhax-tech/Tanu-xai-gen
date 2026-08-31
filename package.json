@@ -5,18 +5,23 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "node src/server.js",
     "build": "vite build",
     "lint": "tsc --noEmit",
     "start": "node src/server.js",
     "server": "node --watch src/server.js"
   },
-  "keywords": ["whatsapp", "session", "generator", "baileys"],
+  "keywords": [
+    "whatsapp",
+    "session",
+    "generator",
+    "baileys"
+  ],
   "author": "Arman HTX",
   "license": "ISC",
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.9",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

@@ -60,13 +60,32 @@ const globalLimiter = rateLimit({
   }
 });
 
-// Mount health and API routes
+// Mount health and API routes FIRST
 app.use('/api', healthRouter);
 app.use('/api/session', sessionRouter);
 app.use('/api/pair', sessionRouter); // Direct pairing alias
 
-// Serve compiled React frontend from dist/
-if (fs.existsSync(distDir)) {
+// Serve frontend: Use Vite middleware in development, or compiled dist/ in production
+if (process.env.NODE_ENV !== 'production' && !process.env.SERVE_STATIC_ONLY) {
+  try {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa'
+    });
+    app.use(vite.middlewares);
+    logger.info('Vite development middleware integrated into Express');
+  } catch (err) {
+    logger.warn({ err }, 'Vite middleware unavailable, serving dist/');
+    if (fs.existsSync(distDir)) {
+      app.use(express.static(distDir));
+      app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api')) return next();
+        res.sendFile(path.join(distDir, 'index.html'));
+      });
+    }
+  }
+} else if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) {
@@ -75,10 +94,9 @@ if (fs.existsSync(distDir)) {
     res.sendFile(path.join(distDir, 'index.html'));
   });
 } else {
-  // If dist/ hasn't been built yet during initial dev
   app.get('/', (req, res) => {
     res.json({
-      service: 'Tanu-XAI Session Generator API',
+      service: 'Tanu-XAI Session Generator API (Baileys v7.0.0-rc14)',
       status: 'online',
       message: 'Run npm run build to compile the React frontend.'
     });
@@ -103,7 +121,7 @@ app.use((err, req, res, next) => {
     success: false,
     error: {
       code: 'INTERNAL_ERROR',
-      message: 'An unexpected internal server error occurred.'
+      message: err.message || 'An unexpected internal server error occurred.'
     }
   });
 });
@@ -111,7 +129,7 @@ app.use((err, req, res, next) => {
 const server = app.listen(env.PORT, '0.0.0.0', () => {
   logger.info(
     { port: env.PORT, env: env.NODE_ENV },
-    `⚡ Tanu-XAI Session Generator running on http://0.0.0.0:${env.PORT}`
+    `⚡ Tanu-XAI Session Generator (Baileys v7.0.0-rc14) running on http://0.0.0.0:${env.PORT}`
   );
 });
 
