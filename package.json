@@ -5,24 +5,44 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "tsc --noEmit",
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "server": "node --watch src/server.js"
   },
   "keywords": ["whatsapp", "session", "generator", "baileys"],
   "author": "Arman HTX",
   "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
     "@hapi/boom": "^10.0.1",
-    "@supabase/supabase-js": "^2.109.0",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "express-rate-limit": "^8.7.0",
+    "framer-motion": "^13.1.1",
     "helmet": "^8.3.0",
-    "pino": "^10.3.1"
+    "lucide-react": "^1.38.0",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^3.6.0"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.4.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
   }
 }

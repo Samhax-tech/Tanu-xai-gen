@@ -1,64 +1,133 @@
 import express from 'express';
-import helmet from 'helmet';
 import cors from 'cors';
+import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { env } from './config/env.js';
-import { logger, child } from './utils/logger.js';
-import { ErrorCodes } from './utils/errors.js';
+import { env, validateEnv } from './config/env.js';
+import { logger } from './utils/logger.js';
+import { sessionRouter } from './routes/sessions.js';
 import healthRouter from './routes/health.js';
-import sessionsRouter from './routes/sessions.js';
-import { shutdownAll } from './services/session-manager.js';
+import { initSessionStorage } from './services/session-manager.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const log = child({ module: 'server' });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootDir = path.resolve(__dirname, '..');
+const distDir = path.join(rootDir, 'dist');
+
+// Validate environment variables
+validateEnv();
+
+// Initialize temporary directory cleanup on startup
+initSessionStorage();
 
 const app = express();
 
-// Railway sits behind a reverse proxy; trust exactly one hop so
-// express-rate-limit and req.ip read the real client IP from X-Forwarded-For
-// without blindly trusting arbitrary spoofed proxy chains.
-app.set('trust proxy', 1);
+// Security middleware with custom CSP for React + Vite SPA
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+        connectSrc: ["'self'", 'https:', 'wss:', 'ws:']
+      }
+    },
+    crossOriginEmbedderPolicy: false
+  })
+);
 
-app.use(helmet());
-app.use(cors({ origin: env.corsOrigin }));
-app.use(express.json({ limit: '32kb' }));
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 100,
+// Global API rate limiter
+const globalLimiter = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.RATE_LIMIT_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, error: { code: ErrorCodes.RATE_LIMITED, message: 'Too many requests.' } }
-});
-app.use('/api', generalLimiter);
-
-app.use('/api', healthRouter);
-app.use('/api', sessionsRouter);
-
-app.use(express.static(path.join(__dirname, '..', 'public')));
-
-// Final safety net: never leak stack traces to the client.
-app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-  log.error({ err: err.message }, 'Unhandled error');
-  res.status(500).json({
+  message: {
     success: false,
-    error: { code: ErrorCodes.INTERNAL_ERROR, message: 'Something went wrong.' }
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many requests. Please slow down.'
+    }
+  }
+});
+
+// Mount health and API routes
+app.use('/api', healthRouter);
+app.use('/api/session', sessionRouter);
+app.use('/api/pair', sessionRouter); // Direct pairing alias
+
+// Serve compiled React frontend from dist/
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+} else {
+  // If dist/ hasn't been built yet during initial dev
+  app.get('/', (req, res) => {
+    res.json({
+      service: 'Tanu-XAI Session Generator API',
+      status: 'online',
+      message: 'Run npm run build to compile the React frontend.'
+    });
+  });
+}
+
+// 404 handler for unmatched API routes
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: {
+      code: 'NOT_FOUND',
+      message: `Endpoint ${req.method} ${req.originalUrl} does not exist.`
+    }
   });
 });
 
-const server = app.listen(env.port, '0.0.0.0', () => {
-  log.info({ port: env.port, env: env.nodeEnv }, 'Tanu-XAI session generator listening');
+// Global error handling middleware
+app.use((err, req, res, next) => {
+  logger.error({ err, url: req.originalUrl }, 'Unhandled Express server error');
+  res.status(err.status || 500).json({
+    success: false,
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected internal server error occurred.'
+    }
+  });
 });
 
-async function gracefulShutdown(signal) {
-  log.info({ signal }, 'Shutting down');
-  await shutdownAll();
-  server.close(() => process.exit(0));
-  // Force-exit if something is still hanging after 10s.
-  setTimeout(() => process.exit(1), 10_000).unref();
+const server = app.listen(env.PORT, '0.0.0.0', () => {
+  logger.info(
+    { port: env.PORT, env: env.NODE_ENV },
+    `⚡ Tanu-XAI Session Generator running on http://0.0.0.0:${env.PORT}`
+  );
+});
+
+// Graceful shutdown handlers
+function handleGracefulShutdown(signal) {
+  logger.info({ signal }, 'Shutting down gracefully...');
+  server.close(() => {
+    logger.info('HTTP server closed.');
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    logger.error('Forcing process shutdown after timeout');
+    process.exit(1);
+  }, 10000);
 }
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));

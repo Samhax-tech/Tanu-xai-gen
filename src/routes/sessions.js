@@ -1,80 +1,97 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { normalizePhoneNumber } from '../utils/phone.js';
+import { env } from '../config/env.js';
+import { toApiError } from '../utils/errors.js';
 import {
   startSession,
-  getSessionPublic,
   getSessionStatus,
-  stopSession,
-  isPhoneNumberActive
+  cancelSession
 } from '../services/session-manager.js';
-import { AppError, ErrorCodes, toApiError } from '../utils/errors.js';
-import { child } from '../utils/logger.js';
 
-const log = child({ module: 'routes:sessions' });
-const router = Router();
+export const sessionRouter = Router();
 
-// Session creation is far more expensive and abuse-prone than a read, so it
-// gets its own, much stricter limit on top of the general API limiter.
-const createSessionLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  limit: 8,
+// Stricter rate limiter for creating new pairing sessions
+const sessionCreateLimiter = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.SESSION_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, error: { code: ErrorCodes.RATE_LIMITED, message: 'Too many session requests. Try again later.' } }
-});
-
-router.post('/session/start', createSessionLimiter, async (req, res) => {
-  try {
-    const normalized = normalizePhoneNumber(req.body?.phoneNumber);
-
-    if (isPhoneNumberActive(normalized)) {
-      throw new AppError(
-        ErrorCodes.SESSION_ALREADY_ACTIVE,
-        'A session for this phone number is already being paired.',
-        409
-      );
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many session requests from this IP. Please try again in 15 minutes.'
     }
-
-    const result = await startSession(normalized);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    if (!(err instanceof AppError)) {
-      log.error({ err: err.message }, 'Unexpected error in /session/start');
-    }
-    const status = err instanceof AppError ? err.statusCode : 500;
-    res.status(status).json(toApiError(err));
   }
 });
 
-router.get('/session/:sessionId', async (req, res) => {
+/**
+ * POST /api/session/start
+ * Start a new pairing code or QR code session.
+ */
+sessionRouter.post('/start', sessionCreateLimiter, async (req, res) => {
   try {
-    const session = await getSessionPublic(req.params.sessionId);
-    res.json({ success: true, session });
+    const { mode = 'pairing', phoneNumber } = req.body || {};
+    const result = await startSession({ mode, phoneNumber });
+    res.status(201).json({
+      success: true,
+      data: result
+    });
   } catch (err) {
-    const status = err instanceof AppError ? err.statusCode : 500;
-    res.status(status).json(toApiError(err));
+    const apiError = toApiError(err);
+    res.status(err.statusCode || 400).json(apiError);
   }
 });
 
-router.get('/session/:sessionId/status', async (req, res) => {
+/**
+ * POST /api/pair (alias for /api/session/start with mode: 'pairing')
+ */
+sessionRouter.post('/pair', sessionCreateLimiter, async (req, res) => {
   try {
-    const status = await getSessionStatus(req.params.sessionId);
-    res.json(status);
+    const { phoneNumber } = req.body || {};
+    const result = await startSession({ mode: 'pairing', phoneNumber });
+    res.status(201).json({
+      success: true,
+      data: result
+    });
   } catch (err) {
-    const statusCode = err instanceof AppError ? err.statusCode : 500;
-    res.status(statusCode).json(toApiError(err));
+    const apiError = toApiError(err);
+    res.status(err.statusCode || 400).json(apiError);
   }
 });
 
-router.delete('/session/:sessionId', async (req, res) => {
+/**
+ * GET /api/session/:id/status
+ * Poll current status of an active session.
+ */
+sessionRouter.get('/:id/status', (req, res) => {
   try {
-    await stopSession(req.params.sessionId, { deleteAuth: req.query.deleteAuth !== 'false' });
-    res.json({ success: true });
+    const { id } = req.params;
+    const status = getSessionStatus(id);
+    res.json({
+      success: true,
+      data: status
+    });
   } catch (err) {
-    const status = err instanceof AppError ? err.statusCode : 500;
-    res.status(status).json(toApiError(err));
+    const apiError = toApiError(err);
+    res.status(err.statusCode || 404).json(apiError);
   }
 });
 
-export default router;
+/**
+ * POST /api/session/:id/cancel
+ * Cancel an ongoing session.
+ */
+sessionRouter.post('/:id/cancel', (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = cancelSession(id);
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    const apiError = toApiError(err);
+    res.status(err.statusCode || 400).json(apiError);
+  }
+});

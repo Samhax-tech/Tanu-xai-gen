@@ -1,119 +1,176 @@
-import makeWASocket, { Browsers, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  DisconnectReason,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  delay
+} from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import { child } from '../utils/logger.js';
-import { maskPhoneNumber } from '../utils/phone.js';
+import pino from 'pino';
+import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
+import { AppError, ErrorCodes } from '../utils/errors.js';
 
-const log = child({ module: 'baileys' });
+const silentLogger = pino({ level: 'silent' });
 
 /**
- * Create a brand-new Baileys socket for one session and wire exactly one
- * connection.update handler. Callers pass a `runtime` object (from
- * session-manager) that owns the current `generation` counter; every event
- * checks it belongs to the still-current generation before acting, so a
- * stale/replaced socket can never mutate the session that superseded it.
+ * Creates an ephemeral Baileys socket instance utilizing temporary multi-file auth.
  *
- * `handlers` is a small set of callbacks the session-manager supplies:
- *   onPairingCode(code)
- *   onConnecting()
- *   onConnected({ jid, name })
- *   onReconnecting()
- *   onLoggedOut()
- *   onExpiredOrFailed(reason)
- *   onCredsUpdate()  -- must call state.saveCreds internally, we just notify
+ * @param {string} tempDir - Path to temporary session directory
+ * @param {object} callbacks - Connection lifecycle listeners
+ * @returns {Promise<{ sock: any, saveCreds: Function, state: any }>}
  */
-export function createSocket({ runtime, authState, generation, handlers }) {
+export async function createSocket(tempDir, callbacks = {}) {
+  const { onConnectionUpdate, onCredsUpdate, onQR } = callbacks;
+
+  const { state, saveCreds } = await useMultiFileAuthState(tempDir);
+  const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({
+    version: [2, 3000, 1015901307],
+    isLatest: true
+  }));
+
+  logger.debug({ version, isLatest }, 'Initializing Baileys ephemeral socket');
+
   const sock = makeWASocket({
-    auth: authState.state,
-    // Canonical, known-supported browser identity. Cosmetic branding is a
-    // separate concern from pairing reliability and is deliberately not
-    // touched here.
-    browser: Browsers.ubuntu('Chrome'),
+    version,
+    auth: state,
+    logger: silentLogger,
     printQRInTerminal: false,
+    browser: ['Tanu-XAI', 'Chrome', '20.0.04'],
+    markOnlineOnConnect: true,
+    generateHighQualityLinkPreview: false,
     syncFullHistory: false,
-    markOnlineOnConnect: false
+    fireInitQueries: true,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 25000,
+    getMessage: async () => undefined
   });
 
-  const isCurrentGeneration = () => runtime.generation === generation;
-
+  // Track credentials update
   sock.ev.on('creds.update', async () => {
-    if (!isCurrentGeneration()) return;
     try {
-      await authState.saveCreds();
+      await saveCreds();
+      if (onCredsUpdate) onCredsUpdate();
     } catch (err) {
-      log.error({ err: err.message, sessionId: runtime.sessionId }, 'Failed to persist creds.update');
+      logger.error({ err }, 'Error saving credentials in ephemeral multi-file state');
     }
   });
 
-  // Exactly one connection.update handler for this socket generation.
-  sock.ev.on('connection.update', async (update) => {
-    if (!isCurrentGeneration()) return;
+  // Track connection lifecycle
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-    const { connection, lastDisconnect, isNewLogin } = update;
+    if (qr && onQR) {
+      onQR(qr);
+    }
 
-    try {
-      if (connection === 'connecting') {
-        await handlers.onConnecting?.();
-        return;
-      }
-
-      if (connection === 'open') {
-        // This is the ONLY point at which we trust that WhatsApp has
-        // genuinely authenticated the socket. creds.me being populated
-        // earlier (e.g. during pairing-code request) is NOT sufficient.
-        const jid = sock.user?.id ?? null;
-        const name = sock.user?.name ?? sock.user?.verifiedName ?? null;
-        await handlers.onConnected?.({ jid, name, isNewLogin: Boolean(isNewLogin) });
-        return;
-      }
-
-      if (connection === 'close') {
-        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
-
-        if (statusCode === DisconnectReason.loggedOut) {
-          await handlers.onLoggedOut?.();
-          return;
-        }
-
-        // Any other close while the session was already authenticated is a
-        // recoverable disconnect; let the session-manager decide whether to
-        // reconnect. If the session never finished pairing, the pairing
-        // timeout (owned by session-manager) governs cleanup instead of an
-        // endless reconnect loop here.
-        await handlers.onReconnecting?.(statusCode);
-      }
-    } catch (err) {
-      log.error(
-        { err: err.message, sessionId: runtime.sessionId },
-        'Error handling connection.update'
-      );
-      await handlers.onExpiredOrFailed?.('handler_error');
+    if (onConnectionUpdate) {
+      onConnectionUpdate(update);
     }
   });
 
-  return sock;
+  return { sock, saveCreds, state };
 }
 
 /**
- * Request a pairing code for a freshly-created socket. Resolution of this
- * call means "WhatsApp generated a code", nothing more — it is explicitly
- * NOT proof of authentication.
+ * Request an 8-character pairing code for a normalized phone number.
+ *
+ * @param {any} sock
+ * @param {string} normalizedPhoneNumber
+ * @returns {Promise<string>} 8-character pairing code
  */
 export async function requestPairingCode(sock, normalizedPhoneNumber) {
-  log.info({ phone: maskPhoneNumber(normalizedPhoneNumber) }, 'Requesting pairing code');
-  const code = await sock.requestPairingCode(normalizedPhoneNumber);
-  return code;
+  try {
+    // Wait briefly for socket readiness if necessary
+    await delay(2000);
+    const code = await sock.requestPairingCode(normalizedPhoneNumber);
+    return code;
+  } catch (err) {
+    logger.error({ err }, 'Failed to request Baileys pairing code');
+    throw new AppError(
+      ErrorCodes.PAIRING_FAILED,
+      'Failed to generate pairing code from WhatsApp. Verify phone number and try again.'
+    );
+  }
 }
 
+/**
+ * Sends the authenticated session token and branded guide card directly to the user's WhatsApp DM.
+ *
+ * @param {any} sock
+ * @param {string} jid - User's WhatsApp JID (e.g. 923001234567@s.whatsapp.net)
+ * @param {string} sessionString - Full Tanu-XAI session token string
+ */
+export async function sendSessionMessages(sock, jid, sessionString) {
+  try {
+    // Message 1: Raw session string for effortless single-tap copy on mobile WhatsApp
+    await sock.sendMessage(jid, {
+      text: sessionString
+    });
+
+    await delay(1000);
+
+    // Message 2: Branded Tanu-XAI card
+    const cardMessage =
+`*╔══════════════════════════╗*
+*   ✦ TANU-XAI SESSION GENERATOR ✦   *
+*╚══════════════════════════╝*
+
+*Status:* ✅ Connected Successfully
+*Session:* Generated & Ready for Deployment
+
+*⚠️ SECURITY WARNING:*
+Do NOT share this session ID with anyone. Anyone with this key has access to authenticate with your WhatsApp account.
+
+*🚀 HOW TO USE IN YOUR BOT:*
+1. Copy the raw session string sent above.
+2. Add it as an environment variable in your deployment:
+   \`SESSION_ID=${sessionString}\`
+3. Start your Tanu-XAI Bot.
+
+_Powered by Tanu-XAI Architecture_`;
+
+    await sock.sendMessage(jid, {
+      text: cardMessage
+    });
+    
+    logger.info('WhatsApp session messages delivered to user DM');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to deliver WhatsApp DM message to user (session remains available in UI)');
+  }
+}
+
+/**
+ * Terminate a socket cleanly.
+ *
+ * @param {any} sock
+ */
 export function terminateSocket(sock) {
   if (!sock) return;
   try {
-    sock.ev.removeAllListeners();
-  } catch {
-    // no-op
+    sock.ev.removeAllListeners('connection.update');
+    sock.ev.removeAllListeners('creds.update');
+    if (sock.ws) {
+      sock.ws.close();
+    }
+    if (typeof sock.end === 'function') {
+      sock.end(new Error('Session terminated'));
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Socket termination cleanup notice');
   }
-  try {
-    sock.end(undefined);
-  } catch {
-    // no-op
-  }
+}
+
+/**
+ * Determine if a disconnect reason is permanent logout.
+ *
+ * @param {any} lastDisconnect
+ * @returns {boolean}
+ */
+export function isPermanentLogout(lastDisconnect) {
+  const statusCode = (lastDisconnect?.error instanceof Boom)
+    ? lastDisconnect.error.output?.statusCode
+    : lastDisconnect?.error?.output?.statusCode;
+
+  return statusCode === DisconnectReason.loggedOut;
 }

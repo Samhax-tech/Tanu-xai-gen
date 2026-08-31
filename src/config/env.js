@@ -1,20 +1,21 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 
-function required(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
+dotenv.config();
 
 export const env = {
-  port: parseInt(process.env.PORT || '3000', 10),
-  nodeEnv: process.env.NODE_ENV || 'development',
-  corsOrigin: process.env.CORS_ORIGIN || '*',
-  supabaseUrl: required('SUPABASE_URL'),
-  supabaseServiceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
-  sessionNamespace: process.env.SESSION_NAMESPACE || 'tanu-xai',
-  pairingTimeoutMs: parseInt(process.env.PAIRING_TIMEOUT_MS || '300000', 10), // 5 min
-  isProduction: (process.env.NODE_ENV || 'development') === 'production'
+  PORT: parseInt(process.env.PORT || '3000', 10),
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  SESSION_PREFIX: process.env.SESSION_PREFIX || 'Tanu-XAI~',
+  BOT_NAME: process.env.BOT_NAME || 'Tanu-XAI',
+  PAIRING_TIMEOUT_MS: parseInt(process.env.PAIRING_TIMEOUT_MS || '300000', 10), // 5 minutes
+  RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 minutes
+  RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+  SESSION_RATE_LIMIT_MAX: parseInt(process.env.SESSION_RATE_LIMIT_MAX || '10', 10),
 };
+
+export function validateEnv() {
+  // Zero external database requirement - only validate ranges
+  if (isNaN(env.PORT) || env.PORT < 1 || env.PORT > 65535) {
+    throw new Error('PORT must be a valid port number between 1 and 65535');
+  }
+}

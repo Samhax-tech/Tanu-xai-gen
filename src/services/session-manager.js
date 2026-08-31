@@ -1,355 +1,401 @@
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
-import { supabase } from './supabase.js';
-import { useSupabaseAuthState, deleteAuthState } from './auth-store.js';
-import { createSocket, requestPairingCode, terminateSocket } from './baileys.js';
+import { BufferJSON } from '@whiskeysockets/baileys';
+import QRCode from 'qrcode';
 import { env } from '../config/env.js';
-import { child } from '../utils/logger.js';
-import { maskPhoneNumber } from '../utils/phone.js';
+import { logger } from '../utils/logger.js';
 import { AppError, ErrorCodes } from '../utils/errors.js';
+import { normalizePhoneNumber, maskPhoneNumber } from '../utils/phone.js';
+import {
+  createSocket,
+  requestPairingCode,
+  sendSessionMessages,
+  terminateSocket,
+  isPermanentLogout
+} from './baileys.js';
 
-const log = child({ module: 'session-manager' });
+const TEMP_BASE_DIR = path.join(process.cwd(), 'temp');
 
-export const SessionStatus = Object.freeze({
-  CREATED: 'created',
-  CONNECTING: 'connecting',
-  REQUESTING_PAIRING_CODE: 'requesting_pairing_code',
-  WAITING_FOR_AUTH: 'waiting_for_auth',
-  AUTHENTICATING: 'authenticating',
-  CONNECTED: 'connected',
-  RECONNECTING: 'reconnecting',
-  LOGGED_OUT: 'logged_out',
-  EXPIRED: 'expired',
-  FAILED: 'failed'
-});
+// In-memory active session map: sessionId -> SessionState
+const activeSessions = new Map();
 
-// In-memory registry of live runtime objects, keyed by sessionId.
-// Only ephemeral/runtime state lives here. Everything durable lives in
-// Supabase (sessions / auth_credentials / auth_keys tables).
-const runtimes = new Map();
+// Active phone lock set: normalizedPhoneNumber -> sessionId
+const activePhones = new Map();
 
-function generateSessionId() {
-  return `TX_${crypto.randomBytes(4).toString('hex')}`;
-}
-
-async function updateSessionRow(sessionId, fields) {
-  const { error } = await supabase
-    .from('sessions')
-    .update({ ...fields, updated_at: new Date().toISOString() })
-    .eq('session_id', sessionId);
-
-  if (error) {
-    log.error({ err: error.message, sessionId }, 'Failed to update session row');
+/**
+ * Startup initialization: Ensure temp base directory exists and clean stale folders.
+ */
+export function initSessionStorage() {
+  try {
+    if (!fs.existsSync(TEMP_BASE_DIR)) {
+      fs.mkdirSync(TEMP_BASE_DIR, { recursive: true });
+      logger.info({ dir: TEMP_BASE_DIR }, 'Created ephemeral temp base directory');
+    } else {
+      // Clean up orphaned session directories from previous restarts
+      const entries = fs.readdirSync(TEMP_BASE_DIR);
+      for (const entry of entries) {
+        const fullPath = path.join(TEMP_BASE_DIR, entry);
+        try {
+          fs.rmSync(fullPath, { recursive: true, force: true });
+        } catch (err) {
+          logger.warn({ entry, err }, 'Failed to clean startup temp folder');
+        }
+      }
+      logger.info('Cleaned stale temp session directories on startup');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to initialize session storage');
   }
-}
-
-async function getSessionRow(sessionId) {
-  const { data, error } = await supabase
-    .from('sessions')
-    .select('*')
-    .eq('session_id', sessionId)
-    .maybeSingle();
-
-  if (error) {
-    log.error({ err: error.message, sessionId }, 'Failed to load session row');
-    throw error;
-  }
-  return data;
-}
-
-function clearTimers(runtime) {
-  if (runtime.pairingTimeout) {
-    clearTimeout(runtime.pairingTimeout);
-    runtime.pairingTimeout = null;
-  }
-}
-
-function removeRuntime(sessionId) {
-  const runtime = runtimes.get(sessionId);
-  if (!runtime) return;
-  clearTimers(runtime);
-  terminateSocket(runtime.sock);
-  runtimes.delete(sessionId);
 }
 
 /**
- * Start a brand-new session: create the DB row, build a Supabase-backed
- * auth state, open a socket, request a pairing code. Resolves as soon as
- * the pairing code is generated — it does NOT wait for authentication.
+ * Format 8-character pairing code into XXXX-XXXX for presentation.
+ * @param {string} code
+ * @returns {string}
  */
-export async function startSession(normalizedPhoneNumber) {
-  const sessionId = generateSessionId();
-  const log2 = child({ sessionId });
+export function formatPairingCode(code) {
+  if (!code) return '';
+  const clean = code.replace(/[^A-Za-z0-9]/g, '');
+  if (clean.length === 8) {
+    return `${clean.slice(0, 4)}-${clean.slice(4)}`;
+  }
+  return code;
+}
 
-  const { error: insertError } = await supabase.from('sessions').insert({
-    session_id: sessionId,
-    phone_number: normalizedPhoneNumber,
-    status: SessionStatus.CREATED
+/**
+ * Create and start a new WhatsApp pairing or QR session.
+ *
+ * @param {object} params
+ * @param {'pairing' | 'qr'} params.mode
+ * @param {string} [params.phoneNumber]
+ * @returns {Promise<{ sessionId: string, status: string, expiresAt: number }>}
+ */
+export async function startSession({ mode = 'pairing', phoneNumber }) {
+  let normalizedPhone = null;
+
+  if (mode === 'pairing') {
+    if (!phoneNumber) {
+      throw new AppError(ErrorCodes.INVALID_PHONE_NUMBER, 'Phone number is required for pairing code mode.');
+    }
+    normalizedPhone = normalizePhoneNumber(phoneNumber);
+
+    // Single-flight lock: check if phone is already actively pairing
+    const existingSessionId = activePhones.get(normalizedPhone);
+    if (existingSessionId) {
+      const existing = activeSessions.get(existingSessionId);
+      if (existing && !['session_ready', 'failed', 'expired'].includes(existing.status)) {
+        throw new AppError(
+          ErrorCodes.PAIRING_IN_PROGRESS,
+          'A pairing session is already in progress for this phone number. Please wait or try again later.'
+        );
+      }
+    }
+  }
+
+  const sessionId = `TXG_${crypto.randomBytes(5).toString('hex')}`;
+  const tempDir = path.join(TEMP_BASE_DIR, sessionId);
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const expiresAt = Date.now() + env.PAIRING_TIMEOUT_MS;
+
+  const session = {
+    id: sessionId,
+    mode,
+    phoneNumber: normalizedPhone,
+    status: 'creating',
+    pairingCode: null,
+    rawPairingCode: null,
+    qr: null,
+    qrDataUrl: null,
+    session: null,
+    error: null,
+    expiresAt,
+    createdAt: Date.now(),
+    sock: null,
+    tempDir,
+    timeoutTimer: null,
+    generation: 1
+  };
+
+  activeSessions.set(sessionId, session);
+  if (normalizedPhone) {
+    activePhones.set(normalizedPhone, sessionId);
+  }
+
+  logger.info(
+    { sessionId, mode, phone: normalizedPhone ? maskPhoneNumber(normalizedPhone) : 'N/A' },
+    'Session created'
+  );
+
+  // Set expiration timeout
+  session.timeoutTimer = setTimeout(() => {
+    handleSessionTimeout(sessionId);
+  }, env.PAIRING_TIMEOUT_MS);
+
+  // Launch socket in background
+  initiateSocket(session).catch((err) => {
+    logger.error({ sessionId, err }, 'Unhandled error during socket initiation');
+    failSession(sessionId, err.message || 'Failed to initialize session');
   });
 
-  if (insertError) {
-    log2.error({ err: insertError.message }, 'Failed to create session row');
-    throw new AppError(ErrorCodes.INTERNAL_ERROR, 'Unable to create session.', 500);
-  }
-
-  const runtime = {
+  return {
     sessionId,
-    phoneNumber: normalizedPhoneNumber,
-    status: SessionStatus.CREATED,
-    generation: 0,
-    sock: null,
-    pairingTimeout: null,
-    welcomeSent: false
+    status: session.status,
+    expiresAt: session.expiresAt
   };
-  runtimes.set(sessionId, runtime);
-
-  try {
-    await updateSessionRow(sessionId, { status: SessionStatus.CONNECTING });
-    runtime.status = SessionStatus.CONNECTING;
-
-    const authState = await useSupabaseAuthState(sessionId);
-    runtime.generation += 1;
-    const generation = runtime.generation;
-
-    const sock = createSocket({
-      runtime,
-      authState,
-      generation,
-      handlers: buildHandlers(runtime)
-    });
-    runtime.sock = sock;
-
-    await updateSessionRow(sessionId, { status: SessionStatus.REQUESTING_PAIRING_CODE });
-    runtime.status = SessionStatus.REQUESTING_PAIRING_CODE;
-
-    const pairingCode = await requestPairingCode(sock, normalizedPhoneNumber);
-
-    await updateSessionRow(sessionId, {
-      status: SessionStatus.WAITING_FOR_AUTH,
-      pairing_code: pairingCode,
-      pairing_code_requested_at: new Date().toISOString()
-    });
-    runtime.status = SessionStatus.WAITING_FOR_AUTH;
-
-    armPairingTimeout(runtime);
-
-    log2.info('Pairing code generated, waiting for authentication');
-
-    return { sessionId, pairingCode, status: SessionStatus.WAITING_FOR_AUTH };
-  } catch (err) {
-    log2.error({ err: err.message }, 'Failed to start session');
-    await updateSessionRow(sessionId, {
-      status: SessionStatus.FAILED,
-      error_message: 'Failed to initialize session or request pairing code.'
-    });
-    removeRuntime(sessionId);
-    throw new AppError(ErrorCodes.PAIRING_FAILED, 'Unable to generate a pairing code right now.', 502);
-  }
 }
 
-function armPairingTimeout(runtime) {
-  clearTimers(runtime);
-  runtime.pairingTimeout = setTimeout(async () => {
-    const current = runtimes.get(runtime.sessionId);
-    if (!current || current.status !== SessionStatus.WAITING_FOR_AUTH) return;
+/**
+ * Initiate Baileys socket for an active session.
+ * @param {object} session
+ */
+async function initiateSocket(session) {
+  const { id: sessionId, tempDir, mode, phoneNumber } = session;
+  session.status = 'connecting';
 
-    log.info({ sessionId: runtime.sessionId }, 'Pairing timed out');
-    await updateSessionRow(runtime.sessionId, {
-      status: SessionStatus.EXPIRED,
-      error_message: 'Pairing code expired before authentication.'
-    });
-    removeRuntime(runtime.sessionId);
-  }, env.pairingTimeoutMs);
-}
-
-function buildHandlers(runtime) {
-  const log2 = child({ sessionId: runtime.sessionId });
-
-  return {
-    async onConnecting() {
-      if (runtime.status === SessionStatus.WAITING_FOR_AUTH) {
-        runtime.status = SessionStatus.AUTHENTICATING;
-        await updateSessionRow(runtime.sessionId, { status: SessionStatus.AUTHENTICATING });
-        log2.info('Authenticating');
+  const { sock, saveCreds } = await createSocket(tempDir, {
+    onQR: async (qrString) => {
+      if (session.mode === 'qr' && !['session_ready', 'failed', 'expired'].includes(session.status)) {
+        try {
+          const qrDataUrl = await QRCode.toDataURL(qrString, {
+            margin: 2,
+            width: 320,
+            color: {
+              dark: '#000000',
+              light: '#ffffff'
+            }
+          });
+          session.qr = qrString;
+          session.qrDataUrl = qrDataUrl;
+          session.status = 'qr_ready';
+          logger.debug({ sessionId }, 'QR code generated and ready');
+        } catch (err) {
+          logger.error({ sessionId, err }, 'Failed to render QR Code');
+        }
       }
     },
-
-    async onConnected({ jid, name }) {
-      clearTimers(runtime);
-
-      const alreadyConnected = runtime.status === SessionStatus.CONNECTED;
-      runtime.status = SessionStatus.CONNECTED;
-
-      await updateSessionRow(runtime.sessionId, {
-        status: SessionStatus.CONNECTED,
-        whatsapp_jid: jid,
-        whatsapp_name: name,
-        authenticated_at: new Date().toISOString(),
-        error_message: null
-      });
-
-      log2.info({ jid: jid ? '[present]' : null }, 'Session connected');
-
-      // Send the welcome message exactly once per authentication, even
-      // across reconnect events that also report connection === 'open'.
-      if (!runtime.welcomeSent && !alreadyConnected) {
-        runtime.welcomeSent = true;
-        await sendWelcomeMessage(runtime, jid).catch((err) => {
-          log2.error({ err: err.message }, 'Failed to send welcome message');
-        });
-      }
-    },
-
-    async onReconnecting(statusCode) {
-      if (runtime.status === SessionStatus.CONNECTED) {
-        runtime.status = SessionStatus.RECONNECTING;
-        await updateSessionRow(runtime.sessionId, { status: SessionStatus.RECONNECTING });
-        log2.info({ statusCode }, 'Reconnecting after disconnect');
-        await reconnect(runtime);
-        return;
-      }
-
-      // A disconnect while still pairing is not a normal authenticated
-      // reconnect. Let the pairing timeout govern cleanup instead of
-      // looping reconnect attempts here.
-      log2.info({ statusCode, status: runtime.status }, 'Disconnected before authentication completed');
-    },
-
-    async onLoggedOut() {
-      clearTimers(runtime);
-      runtime.status = SessionStatus.LOGGED_OUT;
-      await updateSessionRow(runtime.sessionId, {
-        status: SessionStatus.LOGGED_OUT,
-        disconnected_at: new Date().toISOString()
-      });
-      log2.info('Session logged out');
-      removeRuntime(runtime.sessionId);
-    },
-
-    async onExpiredOrFailed(reason) {
-      clearTimers(runtime);
-      runtime.status = SessionStatus.FAILED;
-      await updateSessionRow(runtime.sessionId, {
-        status: SessionStatus.FAILED,
-        error_message: String(reason)
-      });
-      removeRuntime(runtime.sessionId);
+    onConnectionUpdate: async (update) => {
+      await handleConnectionUpdate(sessionId, update);
     }
-  };
-}
+  });
 
-async function reconnect(runtime) {
-  try {
-    const authState = await useSupabaseAuthState(runtime.sessionId);
-    runtime.generation += 1;
-    const generation = runtime.generation;
+  session.sock = sock;
 
-    terminateSocket(runtime.sock);
-
-    const sock = createSocket({
-      runtime,
-      authState,
-      generation,
-      handlers: buildHandlers(runtime)
-    });
-    runtime.sock = sock;
-  } catch (err) {
-    log.error({ err: err.message, sessionId: runtime.sessionId }, 'Reconnect failed');
-    await updateSessionRow(runtime.sessionId, {
-      status: SessionStatus.FAILED,
-      error_message: 'Reconnect failed.'
-    });
-    removeRuntime(runtime.sessionId);
-  }
-}
-
-async function sendWelcomeMessage(runtime, jid) {
-  if (!jid) return;
-  const sock = runtime.sock;
-  if (!sock) return;
-
-  const text =
-    `╔══════════════════════════════════════╗\n` +
-    `║       🌟 TANU-XAI CONNECTED 🌟      ║\n` +
-    `╚══════════════════════════════════════╝\n\n` +
-    `✅ Connected to WhatsApp successfully!\n\n` +
-    `📱 Number: +${runtime.phoneNumber}\n` +
-    `🤖 Device: Tanu-XAI\n` +
-    `🆔 Session ID:\n${runtime.sessionId}\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `📋 Save this Session ID.\n\n` +
-    `Use this Session ID in your Tanu-XAI bot configuration.\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `⚡ Powered by Tanu-XAI`;
-
-  await sock.sendMessage(jid, { text });
-}
-
-/** Safe, public-facing view of a session (no secrets, masked phone). */
-export async function getSessionPublic(sessionId) {
-  const row = await getSessionRow(sessionId);
-  if (!row) {
-    throw new AppError(ErrorCodes.SESSION_NOT_FOUND, 'Session not found.', 404);
-  }
-
-  return {
-    sessionId: row.session_id,
-    status: row.status,
-    phone: maskPhoneNumber(row.phone_number),
-    whatsappName: row.whatsapp_name,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
-}
-
-/** Lightweight polling payload. */
-export async function getSessionStatus(sessionId) {
-  const row = await getSessionRow(sessionId);
-  if (!row) {
-    throw new AppError(ErrorCodes.SESSION_NOT_FOUND, 'Session not found.', 404);
-  }
-
-  return {
-    sessionId: row.session_id,
-    status: row.status,
-    authenticated: row.status === SessionStatus.CONNECTED,
-    whatsappName: row.whatsapp_name || null
-  };
-}
-
-/** Whether a start request for this phone number is currently in flight or active. */
-export function isPhoneNumberActive(normalizedPhoneNumber) {
-  for (const runtime of runtimes.values()) {
-    if (
-      runtime.phoneNumber === normalizedPhoneNumber &&
-      ![SessionStatus.LOGGED_OUT, SessionStatus.EXPIRED, SessionStatus.FAILED].includes(runtime.status)
-    ) {
-      return true;
+  // If pairing code mode, request pairing code from Baileys
+  if (mode === 'pairing' && phoneNumber) {
+    try {
+      session.status = 'connecting';
+      const rawCode = await requestPairingCode(sock, phoneNumber);
+      session.rawPairingCode = rawCode;
+      session.pairingCode = formatPairingCode(rawCode);
+      session.status = 'pairing_code_ready';
+      logger.info({ sessionId }, 'Pairing code generated and ready for user');
+    } catch (err) {
+      failSession(sessionId, err.message || 'Failed to request pairing code');
     }
   }
-  return false;
 }
 
-export async function stopSession(sessionId, { deleteAuth = true } = {}) {
-  removeRuntime(sessionId);
+/**
+ * Handles Baileys connection updates.
+ * @param {string} sessionId
+ * @param {object} update
+ */
+async function handleConnectionUpdate(sessionId, update) {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
 
-  if (deleteAuth) {
-    await deleteAuthState(sessionId);
-  }
+  const { connection, lastDisconnect } = update;
 
-  const { error } = await supabase.from('sessions').delete().eq('session_id', sessionId);
-  if (error) {
-    log.error({ err: error.message, sessionId }, 'Failed to delete session row');
-    throw new AppError(ErrorCodes.INTERNAL_ERROR, 'Failed to delete session.', 500);
+  if (connection === 'connecting') {
+    if (session.status === 'pairing_code_ready' || session.status === 'qr_ready') {
+      session.status = 'authenticating';
+    }
+  } else if (connection === 'open') {
+    logger.info({ sessionId }, 'WhatsApp connection established successfully');
+    session.status = 'connected';
+    await finalizeSession(sessionId);
+  } else if (connection === 'close') {
+    const loggedOut = isPermanentLogout(lastDisconnect);
+    logger.warn({ sessionId, loggedOut, lastDisconnect: lastDisconnect?.error?.message }, 'WhatsApp connection closed');
+
+    if (session.status !== 'session_ready') {
+      if (loggedOut) {
+        failSession(sessionId, 'Logged out from WhatsApp device.');
+      } else if (session.status === 'authenticating') {
+        failSession(sessionId, 'Authentication was cancelled or failed. Please retry.');
+      }
+    }
   }
 }
 
+/**
+ * Finalizes successful authentication: serializes creds.json, delivers WhatsApp DM, and sets session_ready.
+ * @param {string} sessionId
+ */
+async function finalizeSession(sessionId) {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
+
+  session.status = 'session_generating';
+
+  try {
+    const credsPath = path.join(session.tempDir, 'creds.json');
+
+    // Ensure creds.json is flushed to disk
+    let attempts = 0;
+    while (!fs.existsSync(credsPath) && attempts < 10) {
+      await new Promise((r) => setTimeout(r, 400));
+      attempts++;
+    }
+
+    if (!fs.existsSync(credsPath)) {
+      throw new Error('Authentication credentials file (creds.json) was not written by Baileys.');
+    }
+
+    const credsRaw = fs.readFileSync(credsPath, 'utf8');
+    const credsObj = JSON.parse(credsRaw);
+
+    // Serialize creds using Baileys BufferJSON replacer
+    const serialized = JSON.stringify(credsObj, BufferJSON.replacer);
+    const base64Session = Buffer.from(serialized).toString('base64');
+    const sessionString = `${env.SESSION_PREFIX}${base64Session}`;
+
+    session.session = sessionString;
+    session.status = 'session_ready';
+
+    logger.info({ sessionId }, 'Tanu-XAI session generated successfully');
+
+    // Deliver WhatsApp DMs to the connected account
+    const userJid = session.sock?.user?.id;
+    if (userJid) {
+      // Normalize JID: e.g. 923001234567:1@s.whatsapp.net -> 923001234567@s.whatsapp.net
+      const cleanJid = userJid.split(':')[0] + '@s.whatsapp.net';
+      await sendSessionMessages(session.sock, cleanJid, sessionString);
+    }
+
+    // Terminate socket and schedule safe disk cleanup
+    setTimeout(() => {
+      cleanupSessionResources(sessionId);
+    }, 2500);
+
+  } catch (err) {
+    logger.error({ sessionId, err }, 'Failed to finalize Tanu-XAI session');
+    failSession(sessionId, 'Failed to serialize session credentials.');
+  }
+}
+
+/**
+ * Mark session as failed and clean up.
+ * @param {string} sessionId
+ * @param {string} message
+ */
+export function failSession(sessionId, message) {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
+
+  session.status = 'failed';
+  session.error = message;
+
+  logger.warn({ sessionId, message }, 'Session marked as failed');
+  cleanupSessionResources(sessionId);
+}
+
+/**
+ * Handle session timeout.
+ * @param {string} sessionId
+ */
+function handleSessionTimeout(sessionId) {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
+
+  if (session.status !== 'session_ready') {
+    session.status = 'expired';
+    session.error = 'Session pairing timed out (5 minutes). Please try again.';
+    logger.info({ sessionId }, 'Session expired due to timeout');
+  }
+
+  cleanupSessionResources(sessionId);
+}
+
+/**
+ * Cancel an active session manually.
+ * @param {string} sessionId
+ */
+export function cancelSession(sessionId) {
+  const session = activeSessions.get(sessionId);
+  if (!session) {
+    throw new AppError(ErrorCodes.SESSION_NOT_FOUND, 'Session not found or already closed.');
+  }
+
+  session.status = 'failed';
+  session.error = 'Session was cancelled by user.';
+  cleanupSessionResources(sessionId);
+
+  return { success: true };
+}
+
+/**
+ * Safely cleans up socket, timer, temporary disk directory, and phone locks.
+ * @param {string} sessionId
+ */
+function cleanupSessionResources(sessionId) {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
+
+  if (session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer);
+    session.timeoutTimer = null;
+  }
+
+  if (session.phoneNumber) {
+    activePhones.delete(session.phoneNumber);
+  }
+
+  if (session.sock) {
+    terminateSocket(session.sock);
+    session.sock = null;
+  }
+
+  if (session.tempDir && fs.existsSync(session.tempDir)) {
+    try {
+      fs.rmSync(session.tempDir, { recursive: true, force: true });
+      logger.debug({ sessionId, dir: session.tempDir }, 'Deleted temporary auth directory');
+    } catch (err) {
+      logger.warn({ sessionId, err }, 'Failed to delete temporary auth directory');
+    }
+  }
+}
+
+/**
+ * Returns number of active in-memory sessions.
+ * @returns {number}
+ */
 export function activeSessionCount() {
-  return runtimes.size;
+  return activeSessions.size;
 }
 
-export async function shutdownAll() {
-  log.info({ count: runtimes.size }, 'Shutting down all active sessions');
-  for (const sessionId of Array.from(runtimes.keys())) {
-    removeRuntime(sessionId);
+/**
+ * Get status of an active session.
+ * @param {string} sessionId
+ * @returns {object}
+ */
+export function getSessionStatus(sessionId) {
+  const session = activeSessions.get(sessionId);
+  if (!session) {
+    throw new AppError(ErrorCodes.SESSION_NOT_FOUND, 'Session not found or expired.');
   }
+
+  return {
+    sessionId: session.id,
+    mode: session.mode,
+    status: session.status,
+    pairingCode: session.pairingCode,
+    qr: session.qr,
+    qrDataUrl: session.qrDataUrl,
+    session: session.session,
+    error: session.error,
+    expiresAt: session.expiresAt
+  };
 }

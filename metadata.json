@@ -1,0 +1,6 @@
+{
+  "name": "Tanu-XAI Session Generator",
+  "description": "WhatsApp Session Generator for Tanu-XAI Bot with Pairing Code and QR Code authentication using Baileys and Multi-File Auth.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
